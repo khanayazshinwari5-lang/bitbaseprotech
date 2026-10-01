@@ -84,7 +84,7 @@
     '</tr>';
   }
 
-  function render(rows) {
+  function render(rows, opts) {
     state.rows = rows;
     var list = visible();
     var body = $('#marketBody');
@@ -99,6 +99,9 @@
       var tr = body.querySelector('tr[data-sym="' + c.sym + '"]');
       if (tr) state.cells[c.sym] = { price: $('.js-price', tr), chg: $('.js-chg', tr), cap: $('.js-cap', tr), spark: $('.js-spark', tr) };
     });
+    /* Cached rows are painted without charts: the live rows that replace them a
+       moment later are the ones worth fetching history for. */
+    if (opts && opts.noSparks) return;
     loadSparks(list);
   }
 
@@ -144,7 +147,22 @@
     state.cells = {};
     state.stale = false;
     if (state.staleNote) { state.staleNote.remove(); state.staleNote = null; }
-    loading(tab === 'crypto' ? 'Loading real-time crypto prices...' : 'Loading live ' + tab + ' prices...');
+    /* Paint what is already known before asking for anything. A table of
+       spinner rows while one request is in flight is what made this page feel
+       broken; a table of slightly old prices that update a moment later does
+       not. */
+    if (tab === 'crypto') {
+      var warm = F.snapshot ? F.snapshot() : null;
+      if (warm && warm.length) {
+        state.rows = warm;
+        render(warm, { noSparks: true });
+        badge('polling');
+      } else {
+        loading('Loading real-time crypto prices...');
+      }
+    } else {
+      loading('Loading live ' + tab + ' prices...');
+    }
     var p = tab === 'crypto' ? F.loadMarkets() : F.loadGroup(tab);
     p.then(function (rows) {
       render(rows);

@@ -275,6 +275,34 @@
     return rows;
   }
 
+  /* The last good snapshot, kept across page loads.
+   Every page that shows a price asks the network for one, and a table of empty
+   rows while that is in flight is the slowest part of the site. A snapshot from
+   a few minutes ago is the right thing to paint first: the live tick replaces
+   it as soon as it lands, and nobody reads a price as if it were a balance. */
+  var SNAPSHOT_KEY = 'bb_market_snapshot';
+  var SNAPSHOT_MAX_AGE = 15 * 60 * 1000;
+  function store() {
+    try {
+      if (!global.localStorage) return;
+      global.localStorage.setItem(SNAPSHOT_KEY, JSON.stringify({ at: Date.now(), state: marketState }));
+    } catch (e) { /* private mode, or over quota: the cache is optional */ }
+  }
+  function readSnapshot() {
+    try {
+      if (!global.localStorage) return null;
+      var v = JSON.parse(global.localStorage.getItem(SNAPSHOT_KEY) || 'null');
+      if (!v || !v.state || !v.at || Date.now() - v.at > SNAPSHOT_MAX_AGE) return null;
+      return v;
+    } catch (e) { return null; }
+  }
+  /* Warm prices, available synchronously, so a page can paint before it waits. */
+  function snapshot() {
+    if (marketState && Object.keys(marketState).length) return hydrate(marketState);
+    var v = readSnapshot();
+    return v ? hydrate(v.state) : null;
+  }
+
   function loadMarkets() {
     return binanceTickers()
       .then(function (r) { marketSource = 'Binance'; return r; })
@@ -289,7 +317,13 @@
       })
       .then(function (raw) {
         marketState = raw;
-        return hydrate(raw);
+        store();
+        var rows = hydrate(raw);
+        // Anything painting from a cached snapshot gets the real numbers now.
+        if (global.dispatchEvent && global.CustomEvent) {
+          global.dispatchEvent(new global.CustomEvent('bitbase:markets', { detail: { rows: rows } }));
+        }
+        return rows;
       });
   }
 
@@ -1096,6 +1130,12 @@
     decimalsFor: decimalsFor,
 
     loadMarkets: loadMarkets,
+    // Warm prices, readable without waiting: paint from these, then let the
+    // live tick replace them.
+    snapshot: snapshot,
+    onMarkets: function (fn) {
+      global.addEventListener('bitbase:markets', function (e) { fn(e.detail && e.detail.rows); });
+    },
     pollMarkets: pollMarkets,
     applyTick: applyTick,
     loadSpark: loadSpark,

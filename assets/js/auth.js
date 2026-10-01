@@ -128,11 +128,13 @@
     catch (e) { return false; }
   }
 
-  /* Pages wait on this before their first render, so the mirror is populated. */
+  /* Pages wait on this before their first render, so the mirror is populated.
+     BB.ready only settles once the session is restored, the profile is loaded
+     and the tables have been read, so asking for the accounts again here ran a
+     second full read on every single page load for nothing. */
   function whenReady(fn) {
     if (!BB || !BB.ready) { fn(); return Promise.resolve(); }
-    return BB.ready.then(function () { return BB.loadAccounts(); })
-      .then(function () { fn(); }, function () { fn(); });
+    return BB.ready.then(function () { fn(); }, function () { fn(); });
   }
 
   /* ------------------------------------------------------------ passwords */

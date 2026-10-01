@@ -36,14 +36,25 @@
   }
 
   /* ------------------------------------------------------- normalisers */
+  /* A settled contract's figure is what it won or lost, not what it returned to
+     the balance - the stake was already held when it was placed. A win and a
+     loss are the same size, which is what makes the profit percentage the whole
+     of either outcome. Records written before that carry no `net`, so the
+     status decides. */
+  function netOf(t) {
+    if (t.net !== undefined && t.net !== null && isFinite(t.net)) return num(t.net);
+    return t.status === 'Won' ? num(t.profit) : -num(t.profit);
+  }
+
   function realTrades() {
     return (A.readJSON('bb_trades_history', []) || []).filter(mine).map(function (t) {
       var won = t.status === 'Won';
-      var payout = t.status === 'Closed' ? num(t.refund) : (won ? num(t.amt) + num(t.profit) : 0);
+      var closed = t.status === 'Closed';
+      var net = closed ? -(num(t.amt) - num(t.refund)) : netOf(t);
       return {
         kind: 'trade', source: 'Real trade', id: t.id,
         label: (t.dir || '') + ' ' + (t.pair || ''),
-        amount: payout, sign: won || t.status === 'Closed' ? '+' : '-',
+        amount: Math.abs(net), sign: net < 0 ? '-' : '+',
         time: t.time || t.startTime,
         status: t.status || 'Active',
         detail: [
@@ -54,8 +65,9 @@
           ['Duration', (num(t.dur) >= 60 ? Math.round(num(t.dur) / 60) + 'm' : num(t.dur) + 's')],
           ['Entry price', t.entryPrice ? num(t.entryPrice).toLocaleString('en-US') : '\u2014'],
           ['Exit price', t.exitPrice ? num(t.exitPrice).toLocaleString('en-US') : '\u2014'],
-          ['Profit', fmtUSD(t.profit)],
-          ['Result', won ? 'Won' : t.status === 'Closed' ? 'Closed early (50% refund)' : t.status === 'Lost' ? 'Lost' : 'In progress']
+          ['Profit percentage', t.amt > 0 ? ((num(t.profit) / num(t.amt)) * 100).toFixed(0) + '%' : '\u2014'],
+          ['Returned to balance', closed ? fmtUSD(num(t.refund)) : (t.status === 'Active' ? '\u2014' : fmtUSD(num(t.payout !== undefined ? t.payout : num(t.amt) + (won ? num(t.profit) : -num(t.profit)))) )],
+          ['Result', won ? 'Won' : closed ? 'Closed early (50% refund)' : t.status === 'Lost' ? 'Lost' : 'In progress']
         ]
       };
     });
@@ -64,17 +76,19 @@
   function demoTrades() {
     return (A.readJSON('bb_demo_trades_hist', []) || []).filter(mine).map(function (t) {
       var won = t.status === 'Won';
-      var payout = t.status === 'Closed' ? num(t.refund) : (won ? num(t.amt) + num(t.profit) : 0);
+      var closed = t.status === 'Closed';
+      var net = closed ? -(num(t.amt) - num(t.refund)) : netOf(t);
       return {
         kind: 'demo', source: 'Demo trade', id: t.id,
         label: (t.dir || '') + ' ' + (t.pair || ''),
-        amount: payout, sign: won || t.status === 'Closed' ? '+' : '-',
+        amount: Math.abs(net), sign: net < 0 ? '-' : '+',
         time: t.time || t.startTime,
         status: t.status || 'Active',
         detail: [
           ['Trade ID', t.id || '\u2014'], ['Pair', t.pair || '\u2014'],
           ['Direction', t.dir || '\u2014'], ['Stake', fmtUSD(t.amt)],
-          ['Profit', fmtUSD(t.profit)], ['Result', won ? 'Won' : t.status || '\u2014'],
+          ['Profit percentage', t.amt > 0 ? ((num(t.profit) / num(t.amt)) * 100).toFixed(0) + '%' : '\u2014'],
+          ['Result', won ? 'Won' : t.status || '\u2014'],
           ['Account', 'Virtual demo funds']
         ]
       };

@@ -328,9 +328,15 @@
 
     var d = durInfo();
     setBalance(bal - amt);
+    /* The symbol travels with the contract so any page can price it later,
+       not just this one. */
+    var sym = PAIRS[S.idx].sym;
+    var inst = F.instrument ? F.instrument(sym) : null;
     var pos = {
       id: nextId(),
       pair: PAIRS[S.idx].label,
+      sym: sym,
+      group: (inst && inst.group) || 'crypto',
       uid: A.get(A.KEYS.uid, ''),
       dir: dir,
       amt: amt,
@@ -369,39 +375,33 @@
 
   /* Settle against the real exit price. */
   /* An admin can flag an account so every contract settles as a win. This is
-     a demo affordance, not a market feature. */
-  function profitMode() {
-    var rec = A.currentUser() || {};
-    return rec.profitMode === true;
-  }
-
+     a demo affordance, not a market feature. The rule itself lives in
+     trades.js, which every page loads: this page only decides what the user
+     sees when it happens, using the price already on screen. */
+  var settling = false;
   function settleExpired() {
-    var now = Date.now();
-    var settled = [];
-    var forced = profitMode();
-    S.positions.forEach(function (p) {
-      if (p.status !== 'Active') return;
-      if (now - p.startTime < p.dur * 1000) return;
-      p.exitPrice = S.price;
-      var rose = S.price > p.entryPrice;
-      p.won = forced ? true : (p.dir === 'UP' ? rose : !rose);
-      p.status = p.won ? 'Won' : 'Lost';
-      p.forced = forced ? true : undefined;
-      // Win pays the stake back plus the profit; a loss forfeits the stake.
-      if (p.won) setBalance(balance() + p.amt + p.profit);
-      saveTrade(p);
-      settled.push(p);
-    });
-    if (!settled.length) return;
-    S.positions = S.positions.filter(function (p) { return p.status === 'Active'; });
-    savePositions();
-    renderPositions();
-    updateSummary();
-    settled.forEach(function (p) {
-      showResult(p);
-      toast(p.id + (p.won ? ' won +' : ' lost -') + fmtUSD(p.won ? p.amt + p.profit : p.amt),
-        p.won ? 'var(--green)' : 'var(--red)');
-    });
+    if (settling) return;
+    var due = global.BitbaseTrades.due(MODE);
+    if (!due.length) return;
+    settling = true;
+    /* The live price for the pair on screen, when there is one. Anything the
+       page cannot price is left to trades.js, which will not settle it blind
+       either. */
+    global.BitbaseTrades.settleDue(MODE, function (p) {
+      return (p.sym && p.sym === PAIRS[S.idx].sym && S.price) ? S.price : global.BitbaseTrades.pricer()(p);
+    }).then(function (settled) {
+      settling = false;
+      if (!settled.length) return;
+      S.positions = global.BitbaseTrades.open(MODE);
+      setBalance(balance());
+      renderPositions();
+      updateSummary();
+      settled.forEach(function (p) {
+        showResult(p);
+        toast(p.id + (p.won ? ' won +' : ' lost \u2212') + fmtUSD(Math.abs(p.net)),
+          p.won ? 'var(--green)' : 'var(--red)');
+      });
+    }, function () { settling = false; });
   }
 
   function renderPositions() {
@@ -534,14 +534,16 @@
     var icon = won
       ? '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#16c784" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>'
       : '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#ea3943" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>';
-    var payout = won ? pos.amt + pos.profit : pos.amt;
+    /* A win and a loss are mirror images of each other: the stake comes back
+       either way and the profit percentage is what is gained or given up. */
+    var net = Math.abs(pos.net !== undefined ? pos.net : (won ? pos.profit : -pos.profit));
     document.getElementById('tradePanelBody').innerHTML =
       '<div style="padding:24px 20px;text-align:center;">' +
         '<div style="margin-bottom:16px;">' + icon + '</div>' +
         '<div style="font-size:22px;font-weight:700;margin-bottom:4px;color:' + color + ';">' + (won ? 'Trade Won!' : 'Trade Lost') + '</div>' +
         '<div style="font-size:13px;color:rgba(255,255,255,.5);margin-bottom:20px;">' + pos.pair + ' &bull; ' + pos.dir + '</div>' +
         '<div style="background:' + bg + ';border:1px solid ' + color + '33;border-radius:12px;padding:16px;margin-bottom:16px;">' +
-          '<div style="font-size:32px;font-weight:700;font-family:\'IBM Plex Mono\',monospace;color:' + color + ';margin-bottom:4px;">' + (won ? '+' : '-') + fmtUSD(payout) + '</div>' +
+          '<div style="font-size:32px;font-weight:700;font-family:\'IBM Plex Mono\',monospace;color:' + color + ';margin-bottom:4px;">' + (won ? '+' : '-') + fmtUSD(net) + '</div>' +
           '<div style="font-size:12px;color:rgba(255,255,255,.5);">' + (won ? 'Profit earned' : 'Amount lost') + '</div>' +
         '</div>' +
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:20px;">' +
@@ -638,6 +640,17 @@
     setInterval(settleExpired, 1000);
     setInterval(tickTimers, 1000);
     setInterval(renderPositions, 5000);
+
+    /* trades.js watches every page, so a contract can also close from its own
+       sweep while this tab is sitting here. Keep the table honest either way. */
+    global.addEventListener('bitbase:settled', function (e) {
+      var done = e && e.detail;
+      if (done && S.activePanel && S.activePanel.id === done.id) { removePanel(); return; }
+      S.positions = loadPositions().filter(function (p) { return p.status === 'Active'; });
+      setBalance(balance());
+      renderPositions();
+      updateSummary();
+    });
   }
 
   function loadCandles() {

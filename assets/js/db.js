@@ -555,7 +555,13 @@
   global.addEventListener('focus',scheduleRefresh);
   document.addEventListener('visibilitychange',function () { if (!document.hidden) scheduleRefresh(); });
   global.addEventListener('beforeunload',function (e) { if (busy()) { e.preventDefault(); e.returnValue=''; } });
-  setInterval(function () { if (!document.hidden && isOn()) scheduleRefresh(); },4000);
+  /* A safety net for when realtime never arrives: a blocked socket, a proxy that
+     eats websockets, a sleeping laptop. Realtime covers the normal case within
+     milliseconds, so re-reading every table every few seconds on top of it was
+     pure overhead - six queries a minute, forever, competing with the page for
+     whatever connection the user has. */
+  var FALLBACK_POLL_MS = 15000;
+  setInterval(function () { if (!document.hidden && isOn()) scheduleRefresh(); }, FALLBACK_POLL_MS);
   global.BitbaseDB={ MAP:MAP, mirror:mirror, ready:ready, configured:function () { return configured; },
     status:function () { return status; }, error:function () { return lastError; }, isOn:isOn, uid:uid,
     profile:function () { return profile; }, profileError:function () { return profileError; },

@@ -113,7 +113,9 @@ test('poll fallback refreshes admin data when realtime events are unavailable',a
   // Allow the initial subscribed refresh to finish, then disable all event delivery.
   await new Promise(r=>setTimeout(r,100));f.server.emit=()=>{};
   const u=f.server.seed('poll-only@example.test');
-  await until(()=>!!a.A.readJSON('bb_accounts',{})[u.id],5200);
+  // The fallback poll is deliberately slow: realtime covers the normal case in
+  // milliseconds, so a fast poll only competed with the page for bandwidth.
+  await until(()=>!!a.A.readJSON('bb_accounts',{})[u.id],20000);
 });
 test('deactivated accounts cannot complete login',async t=>{
   const f=fixture(t),u=f.server.seed('disabled@example.test');f.server.tables.profiles[0].disabled=true;

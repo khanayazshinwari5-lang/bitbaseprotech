@@ -388,10 +388,15 @@
     (A.readJSON('bb_trades_history', []) || []).forEach(function (t) {
       if (!t || !mine(t) || num(t.time) < cutoff) return;
       var won = t.status === 'Won';
-      var amt = won ? num(t.profit) : -num(t.amount);
+      /* A loss gives up the profit percentage, not the stake, so the feed has to
+         read the same figure the balance did. `t.amount` is not even a field a
+         contract has - it is `amt` - so this was always reading nothing. */
+      var amt = (t.net !== undefined && t.net !== null && isFinite(t.net))
+        ? num(t.net)
+        : (won ? num(t.profit) : -num(t.profit));
       items.push({
         time: num(t.time),
-        label: (won ? 'Won ' : 'Lost ') + fmtAmt(t.amount) + ' USDT · ' + String(t.pair || '').replace('/USDT', ''),
+        label: (won ? 'Won ' : 'Lost ') + fmtAmt(t.amt) + ' USDT · ' + String(t.pair || '').replace('/USDT', ''),
         icon: won ? 'trending-up' : 'trending-down',
         color: won ? 'var(--accent-green)' : 'var(--accent-red)',
         bg: won ? 'rgba(22,199,132,0.1)' : 'rgba(234,57,67,0.1)',
@@ -496,7 +501,18 @@
     var lo = $('#logoutBtn'); if (lo) lo.addEventListener('click', doLogout);
     var ll = $('#logoutLink'); if (ll) ll.addEventListener('click', function (e) { e.preventDefault(); doLogout(); });
 
-    // Live prices.
+    // Live prices. A snapshot kept from the last visit paints the numbers now,
+    // so the page is never a table of dashes waiting on a round trip.
+    var warm = F.snapshot ? F.snapshot() : null;
+    if (warm && warm.length) {
+      warm.forEach(function (r) {
+        state.price[r.sym] = r.price;
+        state.chg[r.sym] = r.change;
+      });
+      patchHoldings();
+      renderStats();
+    }
+
     F.loadMarkets().then(function (rows) {
       rows.forEach(function (r) {
         state.price[r.sym] = r.price;
