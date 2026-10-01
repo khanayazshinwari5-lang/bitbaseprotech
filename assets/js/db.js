@@ -6,10 +6,15 @@
   var CFG = global.BITBASE_CONFIG || {};
   var configured = CFG.useSupabase !== false;
   var mirror = {}, snapshots = {}, versions = {}, dirty = {}, timers = {}, running = {};
+  var attachmentCache = {};
   var client = null, session = null, profile = null, status = 'booting';
   var lastError = null, profileError = null, generation = 0, mutation = 0;
   var external = new Set(), channel = null, channelUid = '', live = false;
   var refreshJob = null, refreshTimer = null, authTimer = null;
+  /* A request that carries an uploaded picture is answered by a fresh read, and
+     a cold connection on a phone is not fast. The old 15s ceiling aborted
+     perfectly healthy reads and turned them into an error banner. */
+  var READ_TIMEOUT_MS = 45000;
   var MAP = {
     bb_accounts: { accounts: true },
     bb_deposit_requests: { table: 'request_rows', kind: 'deposit', list: true },
@@ -46,7 +51,17 @@
   var busy = function () { return Object.keys(dirty).length > 0 || external.size > 0; };
   function emit(name, detail) { global.dispatchEvent(new CustomEvent(name, { detail: detail || {} })); }
   function describe(e) { return (e && e.code ? e.code + ': ' : '') + ((e && e.message) || String(e)); }
+  /* An abort is somebody pulling the plug, not a failure: supabase-js cancels
+     in-flight requests when it retries, when a query is superseded, and on
+     sign-out. Reporting one told the user their data could not be saved when
+     nothing had actually gone wrong. */
+  function isAbort(e) {
+    if (!e || e.__bbTimeout) return false;
+    var n = e.name || '';
+    return n === 'AbortError' || n === 'CanceledError' || /aborted|cancell?ed/i.test(e.message || '');
+  }
   function report(e) {
+    if (isAbort(e)) { lastError = null; return e; }
     lastError = describe(e);
     console.warn('[bitbase-db]', lastError);
     warnBanner('Changes could not be saved or loaded. ' + lastError);
@@ -136,6 +151,37 @@
     if (data.time === undefined) data.time = new Date(r.created).getTime();
     return data;
   }
+  /* ------------------------------------------------------------ attachments
+     A proof of payment, a payslip and an identity scan can each be a few
+     hundred kilobytes of base64. request_rows is re-read by every page, on a
+     timer, forever - so leaving those bytes inside `data` made every visitor
+     download every picture anybody ever uploaded, on every page, until the
+     reads timed out.
+
+     Each attachment therefore travels on its own user_settings row and the
+     request keeps a small reference to it. Nothing but the console ever opens
+     a proof, and it fetches that one row on demand. RLS already permits a
+     user to write their own settings row and an admin to read anyone's, which
+     is exactly the two parties involved, so no schema change is needed.
+
+     Rows written before this split still hold their bytes inline and are read
+     exactly as they always were. */
+  var DOC_PREFIX = 'bb_doc_';
+  var HEAVY_FIELDS = { deposit: ['proof'], borrow: ['proof'], kyc: ['docs'] };
+  function docKey(sid) { return DOC_PREFIX + sid; }
+  function hasBytes(v) {
+    if (typeof v === 'string') return /^data:/.test(v);
+    return !!(v && typeof v === 'object' && typeof v.data === 'string' && /^data:/.test(v.data));
+  }
+  /* What stays on the request: enough to label the attachment in a table. */
+  function docStub(v, ref) {
+    var src = (v && typeof v === 'object') ? v : null;
+    var name = src ? (src.name || src.fileName || '') : String(v || '');
+    var type = src ? (src.type || '') : (((/^data:([^;,]+)/.exec(String(v || '')) || [])[1]) || '');
+    return { name: name || 'attachment', type: type || '', size: (src && src.size) || 0,
+             truncated: !!(src && src.truncated), ref: ref };
+  }
+  function docRefOf(v) { return (v && typeof v === 'object' && typeof v.ref === 'string') ? v.ref : ''; }
   function threadData(t, messages) {
     return { _sid:t.id, id:'SUP-'+t.id, uid:t.user_id, name:t.name, email:t.email,
       subject:t.subject, status:t.status, created:new Date(t.created).getTime(), updated:new Date(t.updated).getTime(),
@@ -156,7 +202,10 @@
       allRows(function () { return client.from('request_rows').select('*').order('id'); }),
       allRows(function () { return client.from('support_threads').select('*').order('id'); }),
       allRows(function () { return client.from('support_messages').select('*').order('created').order('id'); }),
-      allRows(function () { return client.from('user_settings').select('*').eq('user_id', id).order('key'); }),
+      // Attachment rows are excluded here on purpose: they are the heavy ones,
+      // and nothing in the settings screen needs them.
+      allRows(function () { return client.from('user_settings').select('*').eq('user_id', id)
+        .not('key', 'like', DOC_PREFIX + '%').order('key'); }),
       allRows(function () { return client.from('app_settings').select('*').order('key'); })
     ]);
     if (g !== generation || m !== mutation || busy()) { scheduleRefresh(); return false; }
@@ -239,13 +288,63 @@
     return r.data;
   }
   function cleanRequest(row) { var r=clone(row); delete r._sid; return r; }
+  /* Move any inline attachment on this row onto its own settings row and leave a
+     reference behind. Returns the row as it should be stored. */
+  async function detachDocs(clean, kind, sid, owner) {
+    var fields=HEAVY_FIELDS[kind] || [];
+    var payload={}, lean=clone(clean), touched=false;
+    fields.forEach(function (f) {
+      var v=lean[f];
+      if (v==null) return;
+      if (hasBytes(v)) { payload[f]=v; touched=true; }
+      else if (docRefOf(v)) touched=true;   // already split: keep the reference
+    });
+    if (!touched) return clean;
+    var userId=clean.userId || clean.uid || owner;
+    if (!userId) return clean;             // unattributable: store it inline
+    var key=docKey(sid);
+    if (Object.keys(payload).length) {
+      await checked(client.from('user_settings').upsert({ user_id:userId, key:key, value:payload },
+        { onConflict:'user_id,key' }));
+      rememberAttachment(key, clone(payload));
+    }
+    fields.forEach(function (f) {
+      if (lean[f]!=null) lean[f]=docStub(payload[f]!==undefined?payload[f]:lean[f], key);
+    });
+    return lean;
+  }
+  /* Fetch the bytes behind a reference, once per session. */
+  var ATTACH_CACHE_MAX = 12;
+  async function loadAttachment(ref) {
+    if (typeof ref!=='string' || ref.indexOf(DOC_PREFIX)!==0) return null;
+    if (attachmentCache[ref]!==undefined) return attachmentCache[ref];
+    if (!isOn()) return null;
+    try {
+      var r=await checked(client.from('user_settings').select('value').eq('key',ref).limit(1));
+      var value=r.data && r.data[0] ? r.data[0].value : null;
+      rememberAttachment(ref, value || null);
+      return attachmentCache[ref];
+    } catch (e) {
+      rememberAttachment(ref, null);
+      if (!isAbort(e)) report(e);
+      return null;
+    }
+  }
+  /* Each entry is a picture, so the cache is bounded: a console left open all
+     day must not grow into a second copy of everything ever uploaded. */
+  function rememberAttachment(ref, value) {
+    var keys=Object.keys(attachmentCache);
+    while (keys.length>=ATTACH_CACHE_MAX) delete attachmentCache[keys.shift()];
+    attachmentCache[ref]=value;
+  }
   async function writeRows(key, spec, rows, owner, g) {
     var known=snapshots[key] || {};
     for (var row of rows || []) {
       if (g!==generation) throw new Error('Session changed before saving.');
       var old=known[row._sid];
-      if (old && equal(cleanRequest(old),cleanRequest(row))) continue;
-      var clean=cleanRequest(row), record;
+      var clean=await detachDocs(cleanRequest(row), spec.kind, row._sid, owner);
+      if (old && equal(cleanRequest(old),clean)) continue;
+      var record;
       if (old) {
         var q=client.from('request_rows').update({ data:clean, status:clean.status || 'pending', amount:Number(clean.amount) || null, ref:clean.id || null }).eq('id',row._sid);
         if (versions[row._sid]) q=q.eq('updated',versions[row._sid]);
@@ -256,13 +355,17 @@
           data:clean, status:clean.status || 'pending', amount:Number(clean.amount) || null, ref:clean.id || null });
       }
       if (g!==generation) return;
-      known[row._sid]=clone(row); versions[row._sid]=record.updated; snapshots[key]=known;
+      known[row._sid]=Object.assign(clone(row),clean); versions[row._sid]=record.updated; snapshots[key]=known;
     }
     // Only a deliberate admin removal of a previously loaded row can delete it.
     // Unseen rows and customer history trimmed from a display are never deleted.
     if (profile && profile.admin) for (var id of Object.keys(known)) {
       if (!(rows || []).some(function (r) { return r._sid===id; })) {
-        await checked(client.from('request_rows').delete().eq('id',id)); delete known[id];
+        var gone=known[id], ownerOf=(gone && (gone.userId||gone.uid)) || uid();
+        await checked(client.from('request_rows').delete().eq('id',id));
+        await checked(client.from('user_settings').delete().eq('user_id',ownerOf).eq('key',docKey(id)));
+        delete attachmentCache[docKey(id)];
+        delete known[id];
       }
     }
   }
@@ -423,10 +526,18 @@
     // Bound network waits so a broken connection cannot leave the login spinner stuck.
     client=global.supabase.createClient(url,CFG.supabaseAnonKey,{global:{fetch:async function (url,options) {
       var controller=new AbortController(), original=options && options.signal;
+      var timedOut=false;
       var cancel=function () { controller.abort(); };
       if (original) { if (original.aborted) cancel(); else original.addEventListener('abort',cancel,{once:true}); }
-      var timer=setTimeout(cancel,15000);
+      var timer=setTimeout(function () { timedOut=true; cancel(); },READ_TIMEOUT_MS);
       try { return await fetch(url,Object.assign({},options,{signal:controller.signal})); }
+      catch (e) {
+        /* Only a cancel this wrapper started is a real problem, and it is
+           reported as the timeout it is. A cancel supabase-js asked for is
+           passed through untouched so it is not mistaken for a failure. */
+        if (timedOut) { var err=new Error('The request timed out after ' + Math.round(READ_TIMEOUT_MS/1000) + 's. Check your connection and retry.'); err.__bbTimeout=true; throw err; }
+        throw e;
+      }
       finally { clearTimeout(timer); if (original) original.removeEventListener('abort',cancel); }
     }}});
     client.auth.onAuthStateChange(function (event,next) {
@@ -452,5 +563,8 @@
     refreshSession:refreshSession, ensureProfile:ensureProfile, loadAccounts:loadAccounts,
     persist:queue, flush:flush, hasPending:busy, realtime:function () { return live; },
     saveProfileFor:saveProfileFor, saveProfile:function (patch) { return saveProfileFor(uid(),patch); },
-    deleteAccountFor:deleteAccountFor, audit:audit, warn:report };
+    deleteAccountFor:deleteAccountFor, audit:audit, warn:report,
+    // Uploaded pictures live apart from the request so ordinary pages stay
+    // small; this puts them back together where they are actually opened.
+    attachment:loadAttachment, docKey:docKey };
 })(window);

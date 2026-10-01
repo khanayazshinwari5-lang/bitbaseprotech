@@ -49,6 +49,11 @@ class Query {
   constructor(s,c,t){this.s=s;this.c=c;this.t=t;this.op='select';this.filters=[];this.orders=[];this.returning=false;this.one=false;this.offset=0;this.end=Infinity;}
   select(){if(this.op!=='select')this.returning=true;return this;}
   eq(k,v){this.filters.push(r=>r[k]===v);return this;}
+  not(k,op,v){
+    // PostgREST's `not.like` is a negated pattern match; nothing else is used yet.
+    if(op==='like'){const re=new RegExp('^'+String(v).replace(/[.*+?^${}()|[\]\\]/g,'\\$&').replace(/%/g,'.*')+'$');this.filters.push(r=>!re.test(String(r[k]??'')));return this;}
+    this.filters.push(r=>r[k]!==v);return this;
+  }
   in(k,v){this.filters.push(r=>v.includes(r[k]));return this;}
   order(k,opts={}){this.orders.push([k,opts.ascending!==false]);return this;}
   range(a,b){this.offset=a;this.end=b;return this;}

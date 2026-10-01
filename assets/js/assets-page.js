@@ -231,22 +231,19 @@
   }
 
   /* ------------------------------------------------------------ deposit */
-  function depositAddress(sym) {
+  /* Where the money goes is console configuration, so the admin owns it and the
+     app only ever reads it. Earlier this invented a placeholder address and
+     wrote it back into the shared store, which put a fake address in front of
+     customers, overwrote the admin's real one in their own view, and - because
+     only an admin may write that key - raised an error every time it tried. */
+  function depositConfig(sym) {
     var map = A.readJSON(DEPOSIT_KEY, {}) || {};
-    if (!map[sym]) {
-      var uid = A.get(A.KEYS.uid, 'user');
-      var seed = 0, s = uid + sym;
-      for (var i = 0; i < s.length; i++) seed = (seed * 31 + s.charCodeAt(i)) >>> 0;
-      var hex = '';
-      for (var j = 0; j < 64; j++) {
-        seed = (seed * 1664525 + 1013904223) >>> 0;
-        hex += ('0' + ((seed >>> 16) & 0xf).toString(16)).slice(-1);
-      }
-      map[sym] = (sym === 'BTC' ? 'bc1q' : '0x') + hex;
-      A.writeJSON(DEPOSIT_KEY, map);
-    }
-    return map[sym];
+    var entry = map[sym];
+    // Configured as an object by the console; older builds stored a bare string.
+    if (entry && typeof entry === 'object') return { address: String(entry.address || ''), qr: entry.qr || '', network: String(entry.network || '') };
+    return { address: typeof entry === 'string' ? entry : '', qr: '', network: '' };
   }
+  function depositAddress(sym) { return depositConfig(sym).address; }
 
   function coinOptions(select, coins) {
     if (!select) return;
@@ -263,18 +260,49 @@
     function info() {
       var sym = sel.value;
       var m = meta(sym);
-      $('#depositNetworkDisplay').textContent = m.net;
-      var addr = depositAddress(sym);
-      $('#depositAddressText').textContent = addr;
+      var cfg = depositConfig(sym);
+      var addr = cfg.address;
+      /* The console sets the network and the QR too; only fall back to the
+         built-in list when it has not. */
+      var net = cfg.network || m.net;
+      var label = net === m.net ? m.label : net;
+      $('#depositNetworkDisplay').textContent = net;
+      var box = $('#depositAddressText');
+      box.textContent = addr || 'Not configured yet';
+      box.style.color = addr ? '' : 'var(--accent-orange)';
       $('#depositMinAmount').textContent = F.fmtQty(m.min) + ' ' + sym;
       $('#depositWarnCoin').textContent = sym;
-      $('#depositWarnNetwork').textContent = m.label;
+      $('#depositWarnNetwork').textContent = label;
       var c = $('#depositQR');
-      if (c && global.QRCode) {
-        try { global.QRCode.toCanvas(c, addr, { width: 144, margin: 1, color: { dark: '#000000ff', light: '#ffffffff' } }); } catch (e) {}
+      if (c) {
+        if (cfg.qr) {
+          // A QR the console uploaded for this coin wins over a generated one.
+          c.style.display = 'none';
+          var img = document.getElementById('depositQRImg');
+          if (img) { img.src = cfg.qr; img.style.display = 'block'; }
+        } else if (addr) {
+          c.style.display = 'block';
+          var old = document.getElementById('depositQRImg');
+          if (old) old.style.display = 'none';
+          if (global.QRCode) {
+            try { global.QRCode.toCanvas(c, addr, { width: 144, margin: 1, color: { dark: '#000000ff', light: '#ffffffff' } }); } catch (e) {}
+          }
+        } else {
+          c.style.display = 'none';
+          var none = document.getElementById('depositQRImg');
+          if (none) none.style.display = 'none';
+        }
       }
+      var copy = $('#copyAddrBtn'), submit = $('#depositSubmitBtn');
+      if (copy) copy.disabled = !addr;
+      if (submit) submit.disabled = !addr;
     }
     sel.addEventListener('change', info);
+    /* A console change arrives on the shared store while the page is open, so
+       the dialog has to be repainted rather than only read once at boot. */
+    global.addEventListener('bitbase:data', function () {
+      if ($('#depositModal').classList.contains('open')) info();
+    });
     info();
 
     $('#copyAddrBtn').addEventListener('click', function () {
@@ -313,6 +341,10 @@
       var sym = sel.value;
       var m = meta(sym);
       var amt = num($('#depositAmount').value);
+      if (!depositAddress(sym)) {
+        setErr('#depositError', sym + ' deposits are not open yet. Please pick another coin or try again shortly.');
+        return;
+      }
       if (amt < m.min) { setErr('#depositError', 'Minimum deposit is ' + F.fmtQty(m.min) + ' ' + sym); return; }
       if (amt > 1e9) { setErr('#depositError', 'Amount is out of range'); return; }
 

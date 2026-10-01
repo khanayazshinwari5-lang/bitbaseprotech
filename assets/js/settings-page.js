@@ -47,12 +47,22 @@
   function hush(sel) { var e = $(sel); if (e) e.classList.add('hidden'); }
 
   /* ------------------------------------------------------------- profile */
+  /* The six digit id the platform allocated, which is what the person is known
+   by everywhere else. The internal UUID is never shown. */
+function displayId() {
+  var rec = A.readJSON(A.KEYS.users, {})[A.get(A.KEYS.uid, '')] || {};
+  var code = String(rec.code == null ? '' : rec.code).trim();
+  if (/^\d{6}$/.test(code)) return code;
+  var m = String(A.get(A.KEYS.uid, '')).match(/(\d+)/);
+  return m ? m[1] : '------';
+}
+
   function loadProfile() {
     var u = A.currentUser() || {};
     var rec = A.readJSON(A.KEYS.users, {})[A.get(A.KEYS.uid, '')] || {};
     $('#settingsName').value = rec.name || u.name || '';
     $('#settingsEmail').value = rec.email || u.email || '';
-    $('#uidField').value = A.get(A.KEYS.uid, '');
+    $('#uidField').value = displayId();
     $('#settingsUsername').value = rec.username || '@' + String(rec.name || 'user').split(' ')[0].toLowerCase();
     $('#settingsPhone').value = rec.phone || '';
     $('#settingsCountry').value = rec.country || 'us';

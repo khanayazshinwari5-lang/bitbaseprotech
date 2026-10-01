@@ -54,11 +54,25 @@
     if (s < 86400) return Math.round(s / 3600) + 'h ago';
     return Math.round(s / 86400) + 'd ago';
   }
+  /* Every reference to a person goes through here, so making it answer with the
+     six digit code puts the friendly number everywhere at once - tables, toasts,
+     search and the generated request ids. The UUID behind it stays internal. */
   function shortId(uid) {
+    var rec = users()[uid];
+    var code = rec && rec.code != null ? String(rec.code).trim() : '';
+    if (/^\d{6}$/.test(code)) return code;
     var m = String(uid || '').match(/(\d+)/);
     return m ? m[1] : String(uid || '').slice(0, 6);
   }
   function token() { return Date.now().toString(36).toUpperCase(); }
+
+  /* The code for one account, straight off the account row when there is one. */
+  function codeOf(uid) {
+    var rec = users()[uid] || {};
+    var code = String(rec.code == null ? '' : rec.code).trim();
+    if (/^\d{6}$/.test(code)) return code;
+    return shortId(uid);
+  }
 
   /* -------------------------------------------------------------- store */
   function list(key) { return A.readJSON(key, []) || []; }
@@ -150,6 +164,7 @@
       var funding = num(u.funding);
       return {
         uid: k,
+        code: String(u.code == null ? '' : u.code).trim(),
         name: u.name || 'Unnamed',
         email: u.email || '',
         country: u.country || '\u2014',
@@ -280,7 +295,9 @@
   function viewUsers() {
     var acc = accounts();
     var out = acc.filter(function (a) {
-      if (userQuery && (a.name + ' ' + a.email + ' ' + a.uid).toLowerCase().indexOf(userQuery) < 0) return false;
+      /* The six digit code is searchable, and so is the raw id for anyone who
+         has it from somewhere else. */
+      if (userQuery && (a.name + ' ' + a.email + ' ' + a.uid + ' ' + a.code).toLowerCase().indexOf(userQuery) < 0) return false;
       if (userFilter === 'admin') return a.admin;
       if (userFilter === 'disabled') return a.disabled;
       if (userFilter === 'kyc') return kycApproved(a.kyc);
@@ -291,8 +308,12 @@
     var rows = out.map(function (a) {
       var kycTone = kycApproved(a.kyc) ? 'green' : (a.kyc === 'pending' ? 'orange' : 'grey');
       var statusPills = (a.disabled ? pill('Inactive', 'red') : pill('Active', 'green'));
+      var code = shortId(a.uid);
       return '<tr data-uid="' + esc(a.uid) + '">' +
-        '<td><span class="am-id">' + esc(a.uid) + '</span></td>' +
+        '<td><span class="am-id" style="font-size:14px;letter-spacing:.06em;" title="' + esc(a.uid) + '">' +
+          esc(code) + '</span>' +
+          '<button class="am-btn" data-act="copy-code" data-code="' + esc(code) + '" ' +
+            'style="margin-top:6px;padding:3px 8px;font-size:10px;">Copy</button></td>' +
         '<td>' + esc(a.name) + '</td>' +
         '<td style="color:#9a9a9a;">' + esc(a.email) + '</td>' +
         '<td class="am-mono">' + money(a.cash) + '</td>' +
@@ -329,7 +350,7 @@
 
     var live = '<span class="am-live"><span class="d"></span>' +
       '<span id="amLiveText">' + (A.isRemote() ? (global.BitbaseDB.realtime() ? 'Live user list' : 'Auto-refreshing user list') : 'Local user list') + ' \u00b7 ' + out.length + ' shown</span></span>';
-    var search = '<input class="am-input" id="amUserSearch" placeholder="Search name, email or uid" ' +
+    var search = '<input class="am-input" id="amUserSearch" placeholder="Search name, email or 6-digit ID" ' +
       'style="max-width:280px;" value="' + esc(userQuery) + '">';
 
     return '<div class="am-filters left" style="align-items:center;">' + live +
@@ -627,6 +648,21 @@
   }
   function isImageSrc(s) { return /^data:image\//i.test(String(s || '')); }
 
+  /* The bytes behind an attachment are stored apart from the request so that
+     ordinary pages do not have to download every picture anybody ever uploaded
+     (see BitbaseDB). Fetch this one, on demand, when it is about to be shown. */
+  function attachReady(value, field) {
+    var ref = value && typeof value === 'object' ? value.ref : '';
+    if (!ref || !field || !global.BitbaseDB) return Promise.resolve(value);
+    return Promise.resolve(global.BitbaseDB.attachment(ref)).then(function (bag) {
+      var v = bag && bag[field];
+      if (!v) return value;
+      return (v && typeof v === 'object')
+        ? Object.assign({}, v, { name: v.name || (value.name || 'attachment') })
+        : v;
+    }).catch(function () { return value; });
+  }
+
   /* One table cell: a thumbnail where the file is a picture, then a button
      that opens the whole thing. A file that could not be inlined says so by
      name instead of pretending there is nothing attached. */
@@ -852,6 +888,7 @@
       return {
         id: r.id || ('KYC-' + shortId(uid) + '-' + (r.time || 0)),
         uid: uid,
+        code: shortId(uid),
         account: r.name || a.name || '',
         legalName: legal,
         firstName: r.firstName || r.first_name || rec.kyc_first || '',
@@ -953,12 +990,18 @@
   function kycReview(id) {
     var r = findKyc(id);
     if (!r) { toast('Could not find that submission', 'bad'); return; }
-    var html =
+    var front = r.front, back = r.back;
+    /* Only wait when a side is genuinely stored apart. A side that is already
+       inline, or simply absent, has nothing to fetch. */
+    var pending = [front, back].filter(function (v) {
+      return !attachSrc(v) && v && typeof v === 'object' && typeof v.ref === 'string';
+    });
+    var answers =
       '<div class="am-kv">' +
         kycField('Account name', r.account) +
         kycField('Account email', r.email) +
         kycField('Phone', r.phone) +
-        kycField('User ID', r.uid, true) +
+        kycField('User ID', r.code || shortId(r.uid), true) +
         kycField('Legal name', r.legalName) +
         kycField('Date of birth', r.dob) +
         kycField('Nationality', r.nationality) +
@@ -967,12 +1010,25 @@
         kycField('City', r.city) +
         kycField('Postal code', r.postal) +
         kycField('Document type', r.docType) +
-      '</div>' +
-      '<div class="am-label" style="margin-bottom:10px;">Documents</div>' +
-      kycDocBlock('Front of document', r.front) +
-      kycDocBlock('Back of document', r.back) +
-      '<div style="display:flex;gap:10px;margin-top:22px;">' + kycAction(r) + '</div>';
-    modal('KYC submission \u00b7 ' + (r.account || shortId(r.uid)), html, function () {
+      '</div>';
+    function panel(f, b) {
+      return answers +
+        '<div class="am-label" style="margin-bottom:10px;">Documents</div>' +
+        kycDocBlock('Front of document', f) +
+        kycDocBlock('Back of document', b) +
+        '<div style="display:flex;gap:10px;margin-top:22px;">' + kycAction(r) + '</div>';
+    }
+    if (!pending.length) { modal(kycTitle(r), panel(front, back), kycMount(id), true); return; }
+    modal(kycTitle(r), answers + '<p style="color:#8a8a8a;font-size:13px;">Fetching the documents\u2026</p>', function () {}, true);
+    Promise.all([attachReady(front, 'front'), attachReady(back, 'back')]).then(function (both) {
+      modal(kycTitle(r), panel(both[0], both[1]), kycMount(id), true);
+    }).catch(function () {
+      modal(kycTitle(r), panel(front, back), kycMount(id), true);
+    });
+  }
+  function kycTitle(r) { return 'KYC submission \u00b7 ' + (r.account || shortId(r.uid)); }
+  function kycMount(id) {
+    return function () {
       $$('#amModalBody [data-act]').forEach(function (b) {
         b.addEventListener('click', function () {
           var act = b.dataset.act;
@@ -981,7 +1037,7 @@
           if (setKyc(id, act === 'kyc-approve' ? 'approved' : 'rejected')) closeModal();
         });
       });
-    }, true);
+    };
   }
 
   /* ------------------------------------------------------------ balances */
@@ -1007,9 +1063,9 @@
     return '<div class="am-split">' +
       '<div class="am-panel"><div style="padding:22px;">' +
         '<h3 style="font-family:\'Space Grotesk\',sans-serif;font-size:17px;margin:0 0 18px;">Adjust Cash Balance</h3>' +
-        '<div class="am-field"><label class="am-label">Search User by UID</label>' +
-          '<input class="am-input" id="amBalSearch" placeholder="Type UID to search..."></div>' +
-        '<div class="am-field"><label class="am-label">Selected User (UID)</label>' +
+        '<div class="am-field"><label class="am-label">Search User by ID</label>' +
+          '<input class="am-input" id="amBalSearch" placeholder="Type the 6-digit ID..."></div>' +
+        '<div class="am-field"><label class="am-label">Selected User (ID)</label>' +
           '<select class="am-select" id="amBalUser">' + options + '</select></div>' +
         '<div class="am-field"><label class="am-label">Current Cash Balance</label>' +
           '<input class="am-input" id="amBalCurrent" readonly value="$0.00"></div>' +
@@ -1150,7 +1206,7 @@
     if (!proof) { toast('No proof was attached to that request', 'bad'); return; }
     var sub = [byUidName(r), r.coin || '', qty(r.amount, 6), r.network || netOf(r.coin)]
       .filter(Boolean).join(' \u00b7 ');
-    showAttachment('Deposit proof', sub, proof);
+    openWith('Deposit proof', sub, 'proof', proof);
   }
 
   function showLoanProof(id) {
@@ -1159,7 +1215,16 @@
     var proof = r.proof || r.proofName;
     if (!proof) { toast('No proof was attached to that request', 'bad'); return; }
     var sub = [byUidName(r), money(r.amount), (r.days || 0) + ' days'].filter(Boolean).join(' \u00b7 ');
-    showAttachment('Loan proof of income', sub, proof);
+    openWith('Loan proof of income', sub, 'proof', proof);
+  }
+
+  /* A picture is fetched on demand, so say so while it is on its way rather
+     than leaving a button that looks like it did nothing. */
+  function openWith(title, sub, field, value) {
+    var ready = attachSrc(value) ? Promise.resolve(value) : attachReady(value, field);
+    modal(title, '<p style="color:#8a8a8a;font-size:13px;">Fetching the file\u2026</p>', function () {}, true);
+    ready.then(function (v) { showAttachment(title, sub, v); })
+      .catch(function () { closeModal(); toast('That file could not be loaded', 'bad'); });
   }
 
   /* The whole withdrawal instruction on one screen, unabridged. */
@@ -1538,9 +1603,12 @@
     // read-only: without that permission they change nothing but their role.
     var mayEdit = can('editUsers');
     var html =
-      '<div class="am-field"><label class="am-label">UID</label>' +
+      '<div class="am-field"><label class="am-label">User ID</label>' +
+        '<input class="am-input" value="' + esc(shortId(a.uid)) + '" readonly ' +
+          'style="background:#161616;color:#f7931a;font-family:\'IBM Plex Mono\',monospace;letter-spacing:.2em;"></div>' +
+      '<div class="am-field"><label class="am-label">Internal ID</label>' +
         '<input class="am-input" value="' + esc(a.uid) + '" readonly ' +
-          'style="background:#161616;color:#8a8a8a;"></div>' +
+          'style="background:#161616;color:#5a5a5a;font-size:11px;"></div>' +
       '<div class="am-field"><label class="am-label">Name</label>' +
         '<input class="am-input" id="edName" value="' + esc(a.name) + '"' + (mayEdit ? '' : ' disabled') + '></div>' +
       '<div class="am-field"><label class="am-label">Email</label>' +
@@ -1989,6 +2057,7 @@
         else if (act === 'loan-proof') showLoanProof(b.dataset.id);
         else if (act === 'wd-view') showWithdrawal(b.dataset.id);
         else if (act === 'wd-copy') copyText(b.dataset.addr);
+        else if (act === 'copy-code') copyText(b.dataset.code);
         else if (act === 'kyc-approve') setKyc(b.dataset.id, 'approved');
         else if (act === 'kyc-reject') setKyc(b.dataset.id, 'rejected');
       });
@@ -2116,6 +2185,8 @@
         var q = searchBal.value.trim().toLowerCase();
         if (!q) return;
         var hit = accounts().filter(function (a) {
+          /* Exact six digit ID wins outright; the rest match loosely. */
+          if (shortId(a.uid) === q) return true;
           return shortId(a.uid).indexOf(q) === 0 || a.email.toLowerCase().indexOf(q) === 0 || a.name.toLowerCase().indexOf(q) === 0;
         })[0];
         if (hit) { sel.value = hit.uid; syncCurrent(); }
