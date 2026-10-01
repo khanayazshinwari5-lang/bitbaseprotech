@@ -303,10 +303,12 @@ body {
 .am-thread-idle {
   align-items: center; justify-content: center; text-align: center;
   gap: 8px; padding: 40px 24px; color: #5a5a5a;
+  flex: 1; display: flex; flex-direction: column;
 }
 .am-thread-idle i { color: #333; }
 .am-thread-idle div { font-size: 14px; font-weight: 600; color: #8a8a8a; }
 .am-thread-idle span { font-size: 12.5px; line-height: 1.6; max-width: 380px; }
+.am-thread-none { text-align: center; color: #5a5a5a; font-size: 13px; padding: 26px 0; }
 .am-back { display: none; margin-bottom: 10px; }
 
 .am-thread { display: flex; flex-direction: column; min-width: 0; }

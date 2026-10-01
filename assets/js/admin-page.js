@@ -492,14 +492,16 @@
           '</div>' +
           '<div style="display:flex;gap:8px;flex:0 0 auto;">' + actions + '</div>' +
         '</div>' +
-        '<div class="am-msgs" id="amMsgs">' + msgsHtml + '</div>' +
+        '<div class="am-msgs" id="amMsgs">' +
+          (msgsHtml || '<div class="am-thread-none">No messages in this conversation.</div>') +
+        '</div>' +
         '<div class="am-reply">' +
           '<input class="am-input" id="amReply" placeholder="Type your reply..."' + (can('replySupport') ? '' : ' disabled') + '>' +
           '<button class="am-btn primary" data-th="' + esc(thread.id) + '" data-sact="send" ' +
             'style="padding:11px 20px;"' + lock('replySupport') + '>Send</button>' +
         '</div>';
     } else {
-      head = '<div class="am-thread am-thread-idle">' +
+      head = '<div class="am-thread-idle">' +
         '<i data-lucide="message-circle" style="width:26px;height:26px;"></i>' +
         '<div>Pick a conversation to read it</div>' +
         '<span>The ' + out.length + ' conversation' + (out.length === 1 ? '' : 's') + ' on the left are ' +
@@ -1711,7 +1713,13 @@
     /* ---- support ---- */
     $$('[data-thread]').forEach(function (el) {
       if (el.tagName === 'BUTTON') return;
-      var open = function () { supportOpen = el.dataset.thread; render(); };
+      var open = function () {
+        supportOpen = el.dataset.thread;
+        render();
+        // Open on the newest message, the way a chat should read.
+        var m = $('#amMsgs');
+        if (m) m.scrollTop = m.scrollHeight;
+      };
       el.addEventListener('click', open);
       el.addEventListener('keydown', function (e) {
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
