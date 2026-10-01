@@ -451,12 +451,19 @@
       var columns={name:'name',email:'email',country:'country',cash:'cash',funding:'funding',assets:'assets',
         kyc_status:'kyc_status',phone:'phone',phone_verified:'phone_verified',profitMode:'profit_mode',
         disabled:'disabled',admin:'admin',owner:'is_owner',perms:'perms'};
+      /* A column declared NOT NULL has no "absent" state, so a record that drops
+         the key is asking for false - not for nothing. Profit Mode was switched
+         off by deleting the key, which produced no change at all, so the column
+         kept its true and the next read turned the switch straight back on.
+         The comparison below still runs, so this only writes where the stored
+         value genuinely differs. */
+      var falsy=['admin','owner','disabled','profitMode','phone_verified'];
       var before=mirror['bb_accounts:snapshot'] || {};
       for (var id of Object.keys(value || {})) {
         var record=value[id], previous=before[id] || {}, changes={};
         Object.keys(columns).forEach(function (field) {
           var next=record[field];
-          if (next===undefined && ['admin','owner','disabled'].includes(field)) next=false;
+          if (next===undefined && falsy.includes(field)) next=false;
           if (next===undefined && field==='perms') next={};
           if (next!==undefined && !equal(next,previous[field])) changes[columns[field]]=next;
         });

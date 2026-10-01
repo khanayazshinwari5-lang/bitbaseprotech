@@ -1789,7 +1789,10 @@
             map[uid].name = $('#edName').value.trim() || map[uid].name;
             map[uid].email = $('#edEmail').value.trim() || map[uid].email;
           }
-          if (state.profit) map[uid].profitMode = true; else delete map[uid].profitMode;
+          /* False, not an absent key, for the reason given in the table toggle:
+             the column is NOT NULL, so dropping the key never reached the
+             database and the next read restored whatever was stored. */
+          map[uid].profitMode = state.profit;
           A.writeJSON(A.KEYS.users, map);
           // Admin access goes through setAdmin so the first-admin rule still
           // applies, rather than writing the flag straight onto the record.
@@ -2211,7 +2214,10 @@
         var map = users();
         if (!map[uid]) return;
         var on = !(map[uid].profitMode === true);
-        if (on) map[uid].profitMode = true; else delete map[uid].profitMode;
+        /* False, not an absent key. The column is NOT NULL, so removing the key
+           asked the database for nothing at all, left the stored true in place,
+           and the next read put the switch back on by itself. */
+        map[uid].profitMode = on;
         A.writeJSON(A.KEYS.users, map);
         render();
         toast(shortId(uid) + (on ? ' set to profit mode - every contract wins' : ' removed from profit mode'), on ? 'ok' : 'bad');
