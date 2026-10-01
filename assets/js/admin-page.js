@@ -1872,11 +1872,39 @@
   }
 
   /* ---------------------------------------------------------------- boot */
+  /* On a phone the sidebar is a drawer: these three close it again. The burger
+     and the scrim are inert above the breakpoint because the drawer CSS only
+     exists there, but they stay wired so resizing across it never strands the
+     menu open. */
+  function setNav(open) {
+    document.body.classList.toggle('am-nav-open', open);
+    var burger = $('#amBurger');
+    if (burger) burger.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  function wireDrawer() {
+    var burger = $('#amBurger');
+    if (!burger) return;
+    burger.addEventListener('click', function () {
+      setNav(!document.body.classList.contains('am-nav-open'));
+    });
+    var scrim = $('#amScrim');
+    if (scrim) scrim.addEventListener('click', function () { setNav(false); });
+    var close = $('#amSideClose');
+    if (close) close.addEventListener('click', function () { setNav(false); });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') setNav(false);
+    });
+    global.addEventListener('resize', function () {
+      if (global.innerWidth > 860) setNav(false);
+    });
+  }
+
   /* An account flagged admin opens the console with no prompt. Everyone else
      is asked for the admin password, and the right answer promotes them. */
   function enter() {
     $('#amApp').style.display = '';
     $('#amGate').style.display = 'none';
+    wireDrawer();
     $('#amLogout').addEventListener('click', function (e) {
       e.preventDefault();
       A.logout();
@@ -1892,6 +1920,7 @@
       e.preventDefault();
       current = a.dataset.view;
       supportOpen = null;
+      setNav(false);
       render();
       buildNav();
     });

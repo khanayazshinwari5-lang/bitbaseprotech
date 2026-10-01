@@ -45,11 +45,25 @@
 
 <div class="am" id="amApp" style="display:none;">
 
-  <aside class="am-side">
+  <!-- Narrow screens only: the sidebar becomes a drawer behind this bar. -->
+  <div class="am-mbar">
+    <button class="am-burger" id="amBurger" aria-label="Open menu" aria-expanded="false" aria-controls="amSide">
+      <i data-lucide="menu" style="width:20px;height:20px;"></i>
+    </button>
+    <b>BITBASE</b>
+    <span class="am-badge">Admin</span>
+  </div>
+
+  <div class="am-scrim" id="amScrim"></div>
+
+  <aside class="am-side" id="amSide">
     <div class="am-brand">
       <div class="mark">B</div>
       <b>BITBASE</b>
       <span class="am-badge">Admin</span>
+      <button class="am-side-close" id="amSideClose" aria-label="Close menu">
+        <i data-lucide="x" style="width:18px;height:18px;"></i>
+      </button>
     </div>
     <nav class="am-nav" id="amNav"></nav>
     <div class="am-side-foot">
