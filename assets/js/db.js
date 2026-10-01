@@ -558,8 +558,66 @@
     } finally { external.delete(job); scheduleRefresh(); }
   }
   async function loadAccounts() { await refresh(); return mirror.bb_accounts || {}; }
+  /* Postgres answers 42883 for a missing function and PostgREST answers PGRST202.
+     Both mean the schema predates the website, which must not be reported as
+     "that account is gone". */
+  function missingFunction(e) {
+    var code = e && e.code ? String(e.code) : '';
+    return code === '42883' || code === 'PGRST202' ||
+      /function .* does not exist|could not find the function/i.test((e && e.message) || '');
+  }
+  /* Forget one account everywhere it is cached. Without this the console keeps
+     showing the row until the next full read - and that read is skipped while
+     anything is still in flight, so the button could look like it did nothing. */
+  function forgetUser(id) {
+    if (!id) return;
+    if (mirror.bb_accounts) delete mirror.bb_accounts[id];
+    if (mirror['bb_accounts:snapshot']) delete mirror['bb_accounts:snapshot'][id];
+    delete profileVersions[id];
+    var drop = function (key) {
+      var rows = mirror[key];
+      if (Array.isArray(rows)) {
+        mirror[key] = rows.filter(function (r) { return r && (r.uid || r.userId) !== id; });
+      }
+      var known = snapshots[key];
+      if (known) Object.keys(known).forEach(function (sid) {
+        var row = known[sid];
+        if (row && (row.uid || row.userId) === id) { delete known[sid]; delete versions[sid]; }
+      });
+    };
+    Object.keys(MAP).forEach(function (key) { if (MAP[key].list) drop(key); });
+    // Chat threads live outside the request_rows mapping, keyed the same way.
+    drop('bb_support_threads');
+  }
+  /* Removes an account for good. bb_delete_account starts at the auth login, so
+     the sign-in goes too - deleting only the profiles row left the account able
+     to sign in again and be rebuilt from scratch, which is what made the console
+     report a deletion that had not happened. Falls back to the profile row on a
+     schema that predates the function, and says so. */
   async function deleteAccountFor(id) {
-    await checked(client.from('profiles').delete().eq('id',id)); await refresh(); return true;
+    if (!isOn() || !id) throw new Error('Please sign in before removing an account.');
+    // A queued account write that lands after the delete would try to write the
+    // row back, so everything pending is pushed to the database first. If that
+    // cannot be done the account is left alone: removing it now would throw away
+    // the edits the console still holds for it.
+    try { await flush(); }
+    catch (e) { throw new Error('Could not save the pending changes first, so nothing was removed. ' + ((e && e.message) || '')); }
+    var out = null, signinRemoved = true;
+    try { out = await checked(client.rpc('bb_delete_account', { p_id: id })); }
+    catch (e) {
+      if (!missingFunction(e)) throw e;
+      await checked(client.from('profiles').delete().eq('id', id));
+      signinRemoved = false;
+    }
+    forgetUser(id);
+    emit('bitbase:data');
+    // Best effort: the row is already gone from the mirror, so a failed re-read
+    // costs nothing but a later refresh.
+    await refresh().catch(function () {});
+    var result = out && typeof out === 'object' ? clone(out) : {};
+    result.ok = true;
+    result.signinRemoved = result.signinRemoved === undefined ? signinRemoved : result.signinRemoved === true;
+    return result;
   }
   async function audit(action,target,detail) {
     if (!isOn() || !profile || !profile.admin) return false;

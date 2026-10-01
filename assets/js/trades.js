@@ -1,6 +1,7 @@
 /* Real contracts: PostgreSQL owns placement, expiry and payout after all browsers close.
-   This module observes their result. Local/demo arithmetic is retained for practice only.
-   A win returns stake + profit; a loss returns stake - profit; an equal price returns the stake. */
+   This module observes their result. Local/demo arithmetic is retained for the
+   no-database case. A win returns stake + profit; a loss returns stake - profit;
+   an equal price returns the stake. */
 (function (global) {
   'use strict';
 
@@ -39,7 +40,12 @@
     return openPositions(mode).filter(function (p) { return isDue(p, t); });
   }
 
-  /* Practice-only override. The server never uses this flag for real outcomes. */
+  /* The console's Profit Mode switch, read from this account's own record. It
+     covers real and practice trades alike. It changes only the verdict, never the
+     price, and a contract still has to be due with a real price before it is
+     settled at all - so turning it on cannot invent a settlement out of nothing.
+     With a database the same flag is read by the settlement worker, so a real
+     contract is forced there rather than here. */
   function forcedWin() {
     var rec = A.currentUser() || {};
     return rec.profitMode === true;
@@ -82,7 +88,7 @@
     });
     if (!stillOpen) return null;
 
-    var forced = mode==='demo' && forcedWin();
+    var forced = forcedWin();
     var rise = num(price) > num(p.entryPrice);
     var won = forced ? true : (p.dir === 'UP' ? rise : !rise);
     var draw = !forced && num(price) === num(p.entryPrice);

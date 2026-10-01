@@ -797,28 +797,39 @@
       .sort(function (a, b) { return (a.created || 0) - (b.created || 0); });
   }
 
-  /* Remove an account and everything it owns. Refuses on the owner, and on the
-     last admin, so the console can never be locked out with no way back in.
-     With a database the profile row goes first and every table cascades from
-     it - ledgers, threads and settings all disappear with the account.
-     Always returns a promise so callers do not have to handle a bare boolean. */
+  /* Remove an account and everything it owns. Refuses on the owner, on yourself
+     and on the last admin, so the console can never be locked out with no way
+     back in. With a database bb_delete_account removes the sign-in as well as the
+     profile, and every table cascades from it - ledgers, contracts, threads and
+     settings all disappear with the account. Always returns a promise so callers
+     do not have to handle a bare boolean, and always resolves to
+     { ok, signinRemoved } so the console can tell the difference between an
+     account that is really gone and one whose login still works. */
   function deleteAccount(uid) {
     var map = allUsers();
     if (!map[uid]) return Promise.reject({ message: 'No such account' });
     if (map[uid].owner === true) return Promise.reject({ message: 'The console owner cannot be deleted' });
+    if (uid === get(K.uid)) return Promise.reject({ message: 'You cannot delete the account you are signed in with' });
     var admins = Object.keys(map).filter(function (k) { return map[k].admin === true; });
     if (map[uid].admin === true && admins.length <= 1) {
       return Promise.reject({ message: 'Cannot delete the last remaining admin' });
     }
     if (BB && BB.isOn()) {
-      return BB.deleteAccountFor(uid).then(function () {
-        BB.audit('account.delete', uid, { name: map[uid].name });
-        delete map[uid];
-        if (BB.mirror[K.users + ':snapshot']) delete BB.mirror[K.users + ':snapshot'][uid];
-        return true;
-      }).catch(function (e) {
-        return Promise.reject({ message: (e && e.message) || 'Could not delete that account' });
-      });
+      /* Written before the delete rather than after it: once the profile row is
+         gone the audit trail has nothing left to describe, and a caller that
+         fails here would leave no record that the account was ever removed. */
+      var note = BB.audit
+        ? Promise.resolve(BB.audit('account.delete', uid, { name: map[uid].name, email: map[uid].email }))
+          .catch(function () { return false; })
+        : Promise.resolve(false);
+      return note.then(function () { return BB.deleteAccountFor(uid); })
+        .then(function (out) {
+          delete map[uid];
+          if (BB.mirror[K.users + ':snapshot']) delete BB.mirror[K.users + ':snapshot'][uid];
+          return { ok: true, signinRemoved: !(out && out.signinRemoved === false) };
+        }).catch(function (e) {
+          return Promise.reject({ message: (e && e.message) || 'Could not delete that account' });
+        });
     }
     delete map[uid];
     if (!saveUsers(map)) return Promise.reject({ message: 'Could not save the account store' });
@@ -835,7 +846,7 @@
       var rec = readJSON(key, null);
       if (rec && typeof rec === 'object' && rec[uid]) { delete rec[uid]; writeJSON(key, rec); }
     });
-    return Promise.resolve(true);
+    return Promise.resolve({ ok: true, signinRemoved: true });
   }
 
   function cash() {

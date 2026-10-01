@@ -323,11 +323,13 @@
               toggle(a.admin, 'data-admin', a.uid, true) +
               '<span class="am-pill orange" title="First admin - holds every permission">1st admin</span></div>'
           : toggle(a.admin, 'data-admin', a.uid)) + '</td>' +
-        /* The switch affects practice trades only. Real results are server-managed. */
+        /* The switch governs this account's own trades, real and practice alike.
+           With a database the real verdict is forced by the settlement worker;
+           without one, by this browser. Either way the recorded price is kept. */
         '<td><div style="display:flex;flex-direction:column;gap:5px;">' +
-          '<span class="am-togwrap">' +
+          '<span class="am-togwrap" title="Every contract for this account settles as a win">' +
             '<button class="am-toggle' + (a.profitMode ? ' on' : '') + '" data-profit="' + esc(a.uid) + '" ' +
-              'aria-label="Toggle demo profit mode"></button>' +
+              'aria-label="Toggle profit mode"></button>' +
             '<span class="lab">' + (a.profitMode ? 'ON' : 'OFF') + '</span>' +
           '</span>' +
           '<span class="am-mono ' + (a.profit >= 0 ? 'am-num-green' : 'am-num-red') + '">' +
@@ -359,7 +361,7 @@
         search +
         '<button class="am-btn primary" id="amUserRefresh">Refresh now</button>' +
       '</div>' +
-      table(['UID', 'Name', 'Email', 'Cash Balance', 'Total Assets', 'Admin', 'Demo Profit Mode', 'KYC', 'Status', 'Actions'],
+      table(['UID', 'Name', 'Email', 'Cash Balance', 'Total Assets', 'Admin', 'Profit Mode', 'KYC', 'Status', 'Actions'],
         rows, 'No accounts match this filter.');
   }
   /* 'approved' is what a decided submission writes; 'verified' is the older
@@ -613,7 +615,12 @@
         '<td>' + pill(st[0], st[1]) + (t.forced ? ' ' + pill('Profit mode', 'blue') : '') + '</td>' +
         '<td class="am-mono">' + esc(t.mode === 'demo' ? 'demo' : 'real') + '</td>' +
         '<td style="color:#7a7a7a;">' + when(t.startTime) + '</td>' +
-        '<td class="am-right"><button class="am-btn no" data-act="del-trade" data-id="' + esc(t.id) + '"' + lock('deleteRecords') + '>Delete</button></td>' +
+        /* A running contract belongs to the settlement worker, which owns its
+           row until it settles. Offering Delete there only produced a refusal
+           from the database, so the button is shown once there is a result. */
+        '<td class="am-right">' + (outcome === 'active'
+          ? '<span style="color:#5a5a5a;font-size:11px;">Running</span>'
+          : '<button class="am-btn no" data-act="del-trade" data-id="' + esc(t.id) + '"' + lock('deleteRecords') + '>Delete</button>') + '</td>' +
         '</tr>';
     });
     return filterRow([['all', 'All'], ['active', 'Active'], ['won', 'Won'], ['lost', 'Lost'], ['refunded', 'Closed']],
@@ -1638,8 +1645,10 @@
             'placeholder="Asked for on every change"></div>' +
       '</div>' +
       (mayEdit
-        ? switchRow('edProfit', !!a.rec.profitMode, 'Demo Profit Mode',
-            'Practice trades only. Real contracts always follow the recorded market prices.')
+        ? switchRow('edProfit', !!a.rec.profitMode, 'Profit Mode',
+            'Every contract for this account settles as a win, real trades included. ' +
+            'The market price is still fetched and recorded; only the result is forced. ' +
+            'A contract still has to reach its expiry before it settles.')
         : (isSelf
             ? '<div class="am-note">These are your own account details. Changing them, and ' +
                 'everything else on this form, needs the first admin - the switch below is the ' +
@@ -1749,23 +1758,58 @@
 
   function confirmDeleteUser(uid) {
     var a = accounts().filter(function (x) { return x.uid === uid; })[0];
+    var withDb = A.isRemote();
     modal('Delete account', a ? a.name : uid,
-      '<p style="font-size:13.5px;line-height:1.65;color:#9a9a9a;">This removes the account, its ' +
-      'balances, holdings, ledgers and positions from this browser. It cannot be undone and ' +
-      'there is no server copy.</p>' +
+      '<p style="font-size:13.5px;line-height:1.65;color:#9a9a9a;">This permanently removes ' +
+      (withDb
+        ? 'the sign-in, the profile, and every balance, holding, contract, ledger, chat and setting ' +
+          'the account owns. It cannot be undone.'
+        : 'the account, its balances, holdings, ledgers and positions from this browser. It cannot be ' +
+          'undone and there is no server copy.') + '</p>' +
+      (withDb
+        ? '<p style="font-size:12.5px;line-height:1.6;color:#7a7a7a;margin:10px 0 0;">Any open contract is ' +
+          'removed with the account. Real cash already credited stays credited.</p>'
+        : '') +
       '<div style="display:flex;gap:8px;margin-top:20px;">' +
       '<button class="am-btn" id="dNo" style="flex:1;">Cancel</button>' +
-      '<button class="am-btn no" id="dYes" style="flex:1;">Delete permanently</button></div>',
+      '<button class="am-btn no" id="dYes" style="flex:1;">Delete permanently</button></div>' +
+      '<div id="dErr"></div>',
       function () {
         $('#dNo').addEventListener('click', closeModal);
-        $('#dYes').addEventListener('click', function () {
-          A.deleteAccount(uid).then(function () {
+        var yes = $('#dYes');
+        yes.addEventListener('click', function () {
+          // Held until the round trip finishes, so a second click cannot send a
+          // second delete and land on a row that no longer exists.
+          yes.disabled = true;
+          yes.textContent = 'Deleting…';
+          A.deleteAccount(uid).then(function (out) {
             closeModal(); render(); buildNav();
+            /* The two outcomes are not the same promise to the operator: without
+               the database function the profile is gone but the person can still
+               sign in and be rebuilt, which is not what Delete means. */
+            if (out && out.signinRemoved === false) {
+              toast('Profile removed, but the sign-in still works', 'bad');
+              modal('Sign-in still active', esc(a ? a.name : uid),
+                '<p style="font-size:13.5px;line-height:1.65;color:#9a9a9a;">The profile and all of its ' +
+                'records are gone, but this account can still sign in, and signing in rebuilds it.</p>' +
+                '<p style="font-size:13.5px;line-height:1.65;color:#9a9a9a;">Run ' +
+                '<strong>supabase/INSTALL.sql</strong> in the Supabase SQL editor. It adds ' +
+                '<strong>bb_delete_account</strong>, which removes the sign-in itself. Then delete the ' +
+                'account again from here.</p>' +
+                '<div style="display:flex;gap:8px;margin-top:20px;">' +
+                '<button class="am-btn primary" id="dOk" style="flex:1;">Close</button></div>',
+                function () { $('#dOk').addEventListener('click', closeModal); });
+              return;
+            }
             toast('Account deleted', 'bad');
           }).catch(function (e) {
-            var box = $('#amModalBody');
+            yes.disabled = false;
+            yes.textContent = 'Delete permanently';
+            var box = $('#dErr') || $('#amModalBody');
+            if (!box) return;
             var d = document.createElement('div');
             d.className = 'am-err';
+            d.style.marginTop = '14px';
             d.textContent = e.message || 'Could not delete';
             box.appendChild(d);
           });
@@ -2075,7 +2119,8 @@
         toast(shortId(uid) + (on ? ' promoted to admin' : ' admin revoked'), on ? 'ok' : 'bad');
       });
     });
-    /* Demo Profit Mode straight from the table, like the Admin switch. */
+    /* Profit Mode straight from the table, like the Admin switch. It covers this
+       account's real and practice trades alike, so the toast says so. */
     $$('[data-profit]').forEach(function (btn) {
       btn.addEventListener('click', function (e) {
         e.preventDefault();
@@ -2087,7 +2132,7 @@
         if (on) map[uid].profitMode = true; else delete map[uid].profitMode;
         A.writeJSON(A.KEYS.users, map);
         render();
-        toast((on ? 'Profit mode ON for ' : 'Profit mode OFF for ') + map[uid].name, on ? 'ok' : 'bad');
+        toast(shortId(uid) + (on ? ' set to profit mode - every contract wins' : ' removed from profit mode'), on ? 'ok' : 'bad');
       });
     });
 
