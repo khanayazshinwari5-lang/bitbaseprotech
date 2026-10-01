@@ -210,6 +210,12 @@
             var b = $('submitError');
             b.textContent = 'Browser storage is unavailable, so accounts cannot be created. Enable cookies/site data and reload.';
             b.classList.remove('hidden');
+        } else if (!A.storagePersistent()) {
+            // Blocked site data: the app still works, on an in-memory store that
+            // a reload wipes. Say so rather than letting the account vanish.
+            var w = $('submitError');
+            w.textContent = 'This browser is blocking site data for this site, so the account you create will only last until you close or reload this tab.';
+            w.classList.remove('hidden');
         }
 
         $('registerForm').addEventListener('submit', function (e) {

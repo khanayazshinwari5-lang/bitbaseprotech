@@ -233,6 +233,12 @@
             var b = $('loginError');
             b.textContent = 'Browser storage is unavailable, so accounts cannot be saved. Enable cookies/site data and reload.';
             b.style.display = 'block';
+        } else if (!A.storagePersistent()) {
+            // Site data blocked - running on the in-memory fallback, so signing
+            // in only works for accounts made in this same tab.
+            var w = $('loginError');
+            w.textContent = 'This browser is blocking site data for this site, so accounts are only kept in this tab. Allow site data to sign in normally.';
+            w.style.display = 'block';
         }
 
         $('loginForm').addEventListener('submit', function (e) {

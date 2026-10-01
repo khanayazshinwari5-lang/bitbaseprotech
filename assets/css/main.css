@@ -1,0 +1,224 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: 'Inter', sans-serif;
+  background: #0f0f0f;
+  color: #ffffff;
+  overflow-x: hidden;
+}
+
+.gradient-text {
+  background: linear-gradient(135deg, #f7931a, #fdb022 50%, #FFD700);
+  background-size: 200% 200%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.anim-gradient { animation: gradient-shift 4s ease-in-out infinite; }
+
+.gradient-text-blue {
+  background: linear-gradient(135deg, #4169e1, #8b5cf6);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.gradient-stats {
+  background: linear-gradient(to right, #f7931a, #fdb022, #FFD700);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #F7931A 0%, #FDB022 100%);
+  box-shadow: 0 8px 32px rgba(247, 147, 26, 0.35);
+  transition: all 0.3s ease;
+}
+.btn-primary:hover {
+  box-shadow: 0 12px 48px rgba(247, 147, 26, 0.5);
+  transform: translateY(-1px);
+}
+
+.glass-card {
+  background: rgba(26, 26, 26, 0.85);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.section-card {
+  background: rgba(26, 26, 26, 0.6);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: all 0.3s ease;
+}
+.section-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(247, 147, 26, 0.3);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+
+.ticker-wrap { overflow: hidden; position: relative; }
+.ticker-wrap::before,
+.ticker-wrap::after {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0; width: 120px; z-index: 2;
+  pointer-events: none;
+}
+.ticker-wrap::before {
+  left: 0;
+  background: linear-gradient(to right, #0f0f0f, rgba(15,15,15,0.8) 60%, transparent);
+}
+.ticker-wrap::after {
+  right: 0;
+  background: linear-gradient(to left, #0f0f0f, rgba(15,15,15,0.8) 60%, transparent);
+}
+
+.partner-logo {
+  filter: grayscale(100%) opacity(0.5);
+  transition: all 0.3s ease;
+}
+.partner-logo:hover { filter: grayscale(0%) opacity(1); }
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.market-row:hover { background: rgba(247, 147, 26, 0.04); }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+/* ------------------------------------------------------------------ */
+/*  LIVE TRADING TERMINAL                                              */
+/* ------------------------------------------------------------------ */
+
+.terminal-shell {
+  background: #0d0d0d;
+  box-shadow: 0 24px 96px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(247, 147, 26, 0.06);
+}
+
+#chartCanvas { cursor: crosshair; }
+
+.sym-btn, .tf-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 7px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  font-weight: 500;
+  color: #b0b0b0;
+  background: transparent;
+  border: 1px solid transparent;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.sym-btn:hover, .tf-btn:hover { background: rgba(255,255,255,0.05); color: #fff; }
+.sym-btn.active {
+  background: rgba(247, 147, 26, 0.15);
+  border-color: rgba(247, 147, 26, 0.25);
+  color: #fdb022;
+}
+.tf-btn.active {
+  background: rgba(255,255,255,0.08);
+  border-color: rgba(255,255,255,0.12);
+  color: #fff;
+}
+.tf-btn svg { width: 15px; height: 15px; }
+.sym-btn .sym-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.sym-btn .sym-live { font-size: 10px; opacity: 0.7; }
+
+#tSymbol { letter-spacing: -0.01em; }
+
+/* live trade tape */
+#tradeTape { scrollbar-width: none; }
+#tradeTape::-webkit-scrollbar { height: 0; }
+.tape-item {
+  flex: 1 0 auto;
+  min-width: 150px;
+  padding: 10px 14px;
+  border-right: 1px solid rgba(255,255,255,0.05);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  font-family: 'IBM Plex Mono', monospace;
+}
+.tape-item:last-child { border-right: none; }
+.tape-px { font-size: 14px; font-weight: 600; }
+.tape-meta { font-size: 10px; color: #808080; }
+.tape-enter { animation: tape-in 0.32s ease-out; }
+@keyframes tape-in {
+  from { opacity: 0; transform: translateX(16px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* price flash on table cells */
+.flash-up   { animation: flash-up 0.75s ease-out; }
+.flash-down { animation: flash-down 0.75s ease-out; }
+
+.live-dot { animation: pulse-dot 1.6s ease-in-out infinite; }
+
+/* Hotlinked art from the original CDN is slow to arrive. Reserving the
+   intrinsic aspect ratio keeps the page from reflowing when it lands. */
+.img-frame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: var(--ar, 1.34);
+  overflow: hidden;
+  background:
+    repeating-linear-gradient(115deg, rgba(255,255,255,0.018) 0 22px, transparent 22px 44px),
+    #151515;
+}
+.img-fill {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  z-index: 1;
+}
+
+/* skeleton / image fallback */
+.img-fallback {
+  width: 100%;
+  aspect-ratio: 16 / 8;
+  border-radius: 20px;
+  background:
+    repeating-linear-gradient(115deg, rgba(255,255,255,0.022) 0 22px, transparent 22px 44px),
+    radial-gradient(circle at 30% 25%, rgba(247,147,26,0.14), transparent 55%),
+    #151515;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: #5c5c5c;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.img-fallback.phone { aspect-ratio: 3 / 4; width: 320px; max-width: 80vw; }
+.img-fallback.light  { aspect-ratio: 16 / 8; }
+
+/* When the fallback replaces an <img> inside a reserved frame, fill it. */
+.img-frame > .img-fallback {
+  aspect-ratio: auto;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  border-radius: 0;
+}
+
+@media (max-width: 640px) {
+  #chartHost { height: 340px !important; }
+  .tape-item { min-width: 128px; }
+}

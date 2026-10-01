@@ -1,0 +1,781 @@
+/* ==========================================================================
+   Bitbase – client-side account store
+   There is no backend on this replica, so accounts live in localStorage under
+   the same bb_* keys the original site uses. Passwords are salted + SHA-256
+   hashed when crypto.subtle is available (localhost / https), otherwise the
+   record falls back to a clearly-prefixed plaintext value. This is browser
+   storage only and is not a substitute for real server-side auth.
+   ========================================================================== */
+(function (global) {
+  'use strict';
+
+  var K = {
+    users: 'bb_accounts',        // { uid -> { uid, name, email, pass, salt, country, created } }
+    uid: 'bb_uid',
+    name: 'bb_name',
+    email: 'bb_email',
+    pass: 'bb_password',         // session copy of the credential
+    cash: 'bb_cash_balance',
+    funding: 'bb_funding_balance',
+    assets: 'bb_asset_balances',
+    kyc: 'bb_kyc_status',
+    loginTime: 'bb_login_time',
+    registeredAt: 'bb_registered_at',
+    session: 'bb_session',
+    adminLock: 'bb_admin_password'     // salted hash of the admin access password
+  };
+
+  var COINS = ['BTC', 'ETH', 'SOL', 'BNB', 'ADA', 'DOGE', 'XRP', 'DOT', 'LTC', 'LINK', 'AVAX', 'TRX', 'USDT'];
+
+  /* --------------------------------------------------------------- storage
+     localStorage is the only store this build has, and browsers refuse it in
+     plenty of ordinary situations: site data blocked for the origin, a privacy
+     extension, an InPrivate or Guest profile, a partitioned preview frame.
+     Reading the property throws a SecurityError in all of those.
+
+     So the store is probed rather than assumed. When the real one is refused we
+     fall back to a plain in-memory map: accounts, balances, ledgers and the
+     session all keep working for as long as the tab is open, they just do not
+     survive a reload. window.localStorage is shadowed with the same shim so the
+     pages that read it directly do not throw either. */
+  var memoryStore = (function () {
+    var mem = {};
+    var names = function () { return Object.keys(mem); };
+    return {
+      _bbFallback: true,
+      getItem: function (k) {
+        var v = mem[k];
+        return v === undefined ? null : v;
+      },
+      setItem: function (k, v) { mem[k] = String(v); },
+      removeItem: function (k) { delete mem[k]; },
+      clear: function () { mem = {}; },
+      key: function (i) { return names()[i] === undefined ? null : names()[i]; },
+      get length() { return names().length; }
+    };
+  })();
+  var persistent = true;
+
+  function ls() {
+    try {
+      var s = global.localStorage;
+      var probe = 'bb_probe';
+      s.setItem(probe, '1');
+      s.removeItem(probe);
+      return s;
+    } catch (e) {
+      persistent = false;
+      // Shadow the real API so the pages that read it directly (the theme
+      // preference read in <head>) stop throwing too. localStorage may be
+      // unforgeable in some browsers, in which case this is simply skipped.
+      try { global.localStorage = memoryStore; } catch (e2) {}
+      try {
+        Object.defineProperty(global, 'localStorage',
+          { value: memoryStore, configurable: true, writable: true });
+      } catch (e3) {}
+      return memoryStore;
+    }
+  }
+
+  /* True when accounts really are saved to disk between visits. False means
+     the app is running on the in-memory fallback. */
+  function storagePersistent() { ls(); return persistent; }
+
+  function get(key, fallback) {
+    var s = ls();
+    if (!s) return fallback;
+    try {
+      var v = s.getItem(key);
+      return v === null ? fallback : v;
+    } catch (e) { return fallback; }
+  }
+
+  function set(key, val) {
+    var s = ls();
+    if (!s) return false;
+    try { s.setItem(key, String(val)); return true; } catch (e) { return false; }
+  }
+
+  function del(key) {
+    var s = ls();
+    if (!s) return;
+    try { s.removeItem(key); } catch (e) {}
+  }
+
+  function readJSON(key, fallback) {
+    try { var v = get(key, null); return v ? JSON.parse(v) : fallback; }
+    catch (e) { return fallback; }
+  }
+
+  function writeJSON(key, val) {
+    try { return set(key, JSON.stringify(val)); } catch (e) { return false; }
+  }
+
+  /* ------------------------------------------------------------ passwords */
+  function randomSalt() {
+    var a = new Uint8Array(16);
+    if (global.crypto && global.crypto.getRandomValues) global.crypto.getRandomValues(a);
+    else for (var i = 0; i < 16; i++) a[i] = Math.floor(Math.random() * 256);
+    return Array.prototype.map.call(a, function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+  }
+
+  function hasSubtle() {
+    return !!(global.crypto && global.crypto.subtle && global.crypto.subtle.digest && global.TextEncoder);
+  }
+
+  function hashPassword(pw, salt) {
+    if (!hasSubtle()) return Promise.resolve('plain$' + pw);
+    var data = new TextEncoder().encode(salt + '::' + pw);
+    return global.crypto.subtle.digest('SHA-256', data).then(function (buf) {
+      var hex = Array.prototype.map.call(new Uint8Array(buf), function (b) {
+        return b.toString(16).padStart(2, '0');
+      }).join('');
+      return 'sha256$' + salt + '$' + hex;
+    }).catch(function () {
+      return 'plain$' + pw;
+    });
+  }
+
+  function verifyPassword(pw, stored) {
+    if (!stored) return Promise.resolve(false);
+    if (stored.indexOf('plain$') === 0) return Promise.resolve(stored.slice(6) === pw);
+    if (stored.indexOf('sha256$') === 0) {
+      var salt = stored.split('$')[1] || '';
+      return hashPassword(pw, salt).then(function (h) { return h === stored; });
+    }
+    return Promise.resolve(false);
+  }
+
+  /* --------------------------------------------------------------- store */
+  function allUsers() { return readJSON(K.users, {}) || {}; }
+
+  function saveUsers(map) { return writeJSON(K.users, map); }
+
+  /* Six digit numeric id, the format the platform shows in the admin console.
+     Random rather than sequential so ids are not guessable from each other,
+     and re-rolled on the (very unlikely) collision. */
+  function newUid() {
+    var map = allUsers();
+    for (var attempt = 0; attempt < 50; attempt++) {
+      var n = 100000 + Math.floor(Math.random() * 900000);
+      var id = String(n);
+      if (!map[id]) {
+        set('bb_uid_seq', (parseInt(get('bb_uid_seq', '0'), 10) || 0) + 1);
+        return id;
+      }
+    }
+    // Fall back to a counter outside the random space only if 50 tries failed.
+    var seq = (parseInt(get('bb_uid_seq', '0'), 10) || 0) + 1;
+    set('bb_uid_seq', seq);
+    return String(1000000 + seq);
+  }
+
+  function emptyAssets() {
+    var a = {};
+    COINS.forEach(function (c) { a[c] = { balance: 0, qty: 0 }; });
+    return a;
+  }
+
+  var EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  function normaliseEmail(e) { return String(e || '').trim().toLowerCase(); }
+
+  function findByEmail(email) {
+    var map = allUsers(), e = normaliseEmail(email), k;
+    for (k in map) if (map[k] && normaliseEmail(map[k].email) === e) return map[k];
+    return null;
+  }
+
+  /* ------------------------------------------------------------- register */
+  function register(data) {
+    var name = String(data.name || '').trim();
+    var email = normaliseEmail(data.email);
+    var pass = String(data.password || '');
+
+    if (!name) return Promise.reject({ field: 'nameError', message: 'Please enter your full name' });
+    if (!EMAIL_RE.test(email)) return Promise.reject({ field: 'emailError', message: 'Please enter a valid email address' });
+    if (!pass || pass.length < 8) return Promise.reject({ field: 'passError', message: 'Password must be at least 8 characters' });
+    if (findByEmail(email)) {
+      return Promise.reject({ field: 'emailError', message: 'An account with this email already exists. Please sign in.' });
+    }
+
+    var salt = randomSalt();
+    return hashPassword(pass, salt).then(function (hashed) {
+      var map = allUsers();
+      var uid = newUid();
+      map[uid] = {
+        uid: uid, name: name, email: email, pass: hashed, salt: salt,
+        country: data.country || 'other', created: Date.now(),
+        cash: 0, assets: emptyAssets()
+      };
+      if (!saveUsers(map)) throw { field: 'submitError', message: 'Could not save your account. Please enable browser storage and try again.' };
+      // A brand-new account must never inherit balances, KYC or settings left
+      // behind by whoever used this browser last.
+      del(K.cash); del(K.assets); del(K.kyc); del(K.loginTime); del(K.registeredAt);
+      startSession(uid, map[uid], undefined, true);
+      return map[uid];
+    });
+  }
+
+  /* ---------------------------------------------------------------- login */
+  function login(email, password, remember) {
+    var e = normaliseEmail(email);
+    if (!EMAIL_RE.test(e)) return Promise.reject({ field: 'emailError', message: 'Please enter a valid email address' });
+    if (!password) return Promise.reject({ field: 'passError', message: 'Password is required' });
+
+    var user = findByEmail(e);
+    if (!user) {
+      return Promise.reject({ field: 'loginError', message: 'No account found. Please create an account first.' });
+    }
+    if (user.disabled === true) {
+      return Promise.reject({ field: 'loginError', message: 'This account has been deactivated. Please contact support.' });
+    }
+    return verifyPassword(password, user.pass).then(function (ok) {
+      if (!ok) {
+        return Promise.reject({ field: 'loginError', message: 'Incorrect email or password. Please try again.' });
+      }
+      startSession(user.uid, user, remember);
+      return user;
+    });
+  }
+
+  function resetPassword(email, newPassword) {
+    var user = findByEmail(email);
+    if (!user) return Promise.reject({ message: 'No account found with that email' });
+    if (!newPassword || newPassword.length < 8) {
+      return Promise.reject({ message: 'Password must be at least 8 characters' });
+    }
+    var salt = randomSalt();
+    return hashPassword(newPassword, salt).then(function (hashed) {
+      var map = allUsers();
+      map[user.uid].pass = hashed;
+      map[user.uid].salt = salt;
+      if (!saveUsers(map)) return Promise.reject({ message: 'Could not save the new password' });
+      return true;
+    });
+  }
+
+  /* Authenticated change: the current password must verify first. */
+  function changePassword(email, currentPassword, newPassword) {
+    var user = findByEmail(email);
+    if (!user) return Promise.reject({ message: 'No account found' });
+    if (!currentPassword) return Promise.reject({ message: 'Enter your current password' });
+    if (!newPassword || newPassword.length < 8) {
+      return Promise.reject({ message: 'New password must be at least 8 characters' });
+    }
+    if (newPassword === currentPassword) {
+      return Promise.reject({ message: 'Choose a password different from the current one' });
+    }
+    return verifyPassword(currentPassword, user.pass).then(function (ok) {
+      if (!ok) return Promise.reject({ message: 'Incorrect current password' });
+      var salt = randomSalt();
+      return hashPassword(newPassword, salt).then(function (hashed) {
+        var map = allUsers();
+        map[user.uid].pass = hashed;
+        map[user.uid].salt = salt;
+        if (!saveUsers(map)) return Promise.reject({ message: 'Could not save the new password' });
+        return true;
+      });
+    });
+  }
+
+  /* -------------------------------------------------------------- session */
+  function startSession(uid, user, remember, isNew) {
+    var s = ls();
+    var forever = remember === true;
+    try { if (s && s.removeItem) s.removeItem(K.session); } catch (e) {}
+
+    set(K.uid, uid);
+    set(K.name, user.name);
+    set(K.email, user.email);
+    set(K.loginTime, Date.now());
+
+    if (isNew || !get(K.registeredAt)) set(K.registeredAt, user.created || Date.now());
+    if (isNew || get(K.kyc) === null) set(K.kyc, 'none');
+
+    // Rehydrate this account's own portfolio into the working keys.
+    if (isNew) { set(K.cash, 0); set(K.assets, JSON.stringify(emptyAssets())); set(K.funding, 0); }
+    else {
+      set(K.cash, user.cash === undefined || user.cash === null ? 0 : user.cash);
+      set(K.assets, JSON.stringify(user.assets && typeof user.assets === 'object' ? user.assets : emptyAssets()));
+      if (user.funding === undefined || user.funding === null) user.funding = 0;
+      set(K.funding, Math.max(0, numv(user.funding)));
+    }
+
+    // "Remember me" survives a browser restart; otherwise sessionStorage.
+    var token = { uid: uid, at: Date.now() };
+    try {
+      if (forever) s.setItem(K.session, JSON.stringify(token));
+      else if (global.sessionStorage) global.sessionStorage.setItem(K.session, JSON.stringify(token));
+    } catch (e) {}
+  }
+
+  function currentUser() {
+    var uid = get(K.uid);
+    if (!uid) return null;
+    var map = allUsers();
+    var u = map[uid];
+    if (u) return u;
+    // Session restored from a sessionStorage token with no local record.
+    return { uid: uid, name: get(K.name, 'User'), email: get(K.email, 'user@email.com') };
+  }
+
+  function isAuthenticated() { return !!get(K.uid); }
+
+  function displayName() {
+    var u = currentUser();
+    var n = (u && u.name) || get(K.name, 'User');
+    return String(n).split(' ')[0] || 'User';
+  }
+
+  function logout() {
+    // Balances stay on the account record; only the working session is dropped
+    // so the next user never inherits them.
+    [K.cash, K.assets, K.kyc, K.loginTime, K.registeredAt, K.name, K.email, K.pass, K.uid].forEach(del);
+    try {
+      if (global.sessionStorage) global.sessionStorage.removeItem(K.session);
+    } catch (e) {}
+    del(K.session);
+  }
+
+  /* ------------------------------------------------------------ portfolio */
+  /* Balances live on the account record so each account keeps its own funds
+     when users swap on the same browser. The bb_cash_balance / bb_asset_balances
+     keys are mirrored for compatibility with the original site's key names. */
+
+  function currentRecord() {
+    var uid = get(K.uid);
+    if (!uid) return null;
+    var map = allUsers();
+    return map[uid] || null;
+  }
+
+  function persist(rec) {
+    var map = allUsers();
+    map[rec.uid] = rec;
+    saveUsers(map);
+  }
+
+  /* ---------------------------------------------------------------- admin
+     There is no server, so an "admin" is simply an account record carrying
+     admin:true. Anyone can set it by hand in devtools; in a real deployment
+     this flag would come from the backend and never from the client. */
+  function isAdmin() {
+    var rec = currentRecord();
+    return !!(rec && rec.admin === true);
+  }
+
+  /* ------------------------------------------------------------ admin roles
+     Two kinds of admin. The first admin *owns* the console: they hold every
+     permission, cannot be demoted or deleted, and are the only role that can
+     hand out or revoke admin access. Every other admin is secondary, and the
+     first admin decides - per admin, per action - what they may do.
+
+     Secondary admins can open every view. What is limited is what they can
+     change, which is the part that moves money or edits accounts. They can
+     still ask to become the first admin; that one move is settled by the admin
+     password rather than by the current role, see setOwnerAs below. */
+  var PERMISSIONS = [
+    { key: 'approveDeposits',    label: 'Approve deposits',    hint: 'Credit a submitted deposit to the user. Rejections come with this too.' },
+    { key: 'approveWithdrawals', label: 'Approve withdrawals', hint: 'Release a withdrawal, or reject it and return the held funds.' },
+    { key: 'approveLoans',       label: 'Approve loans',       hint: 'Release borrowed funds and mark loans settled.' },
+    { key: 'reviewKyc',          label: 'Review KYC',          hint: 'Approve or reject submitted identity documents.' },
+    { key: 'replySupport',       label: 'Reply to support',    hint: 'Answer customers in the chat panel.' },
+    { key: 'adjustBalances',     label: 'Adjust balances',     hint: 'Credit, debit or set any balance by hand.' },
+    { key: 'editUsers',          label: 'Edit users',          hint: 'Change names, emails, cash and profit mode.' },
+    { key: 'deleteRecords',      label: 'Delete records',      hint: 'Remove users, trades and support tickets.' },
+    { key: 'exportData',         label: 'Export data',         hint: 'Download ledgers as CSV or JSON.' },
+    { key: 'consoleSettings',    label: 'Console settings',    hint: 'Change the admin access password and reset demo data.' }
+  ];
+  var PERM_KEYS = PERMISSIONS.map(function (p) { return p.key; });
+
+  function isOwner(uid) {
+    var rec = uid ? allUsers()[uid] : currentRecord();
+    return !!(rec && rec.owner === true);
+  }
+
+  /* Effective permissions for one account, or the signed-in one by default.
+     Returns null when the account is not an admin at all. */
+  function adminPerms(uid) {
+    var rec = uid ? allUsers()[uid] : currentRecord();
+    if (!rec || rec.admin !== true) return null;
+    if (rec.owner === true) {
+      var all = {};
+      PERM_KEYS.forEach(function (k) { all[k] = true; });
+      return all;
+    }
+    var out = {};
+    PERM_KEYS.forEach(function (k) { out[k] = !!(rec.perms && rec.perms[k] === true); });
+    return out;
+  }
+
+  function adminCan(key) {
+    var p = adminPerms();
+    return !!(p && p[key]);
+  }
+
+  /* Only the owner may change what another admin is allowed to do, and the
+     owner's own row is deliberately not editable this way. */
+  function setAdminPerms(uid, perms) {
+    if (!isOwner()) return false;
+    var map = allUsers();
+    if (!map[uid] || map[uid].admin !== true) return false;
+    if (map[uid].owner === true) return false;
+    var next = {};
+    PERM_KEYS.forEach(function (k) { next[k] = !!(perms && perms[k] === true); });
+    map[uid].perms = next;
+    return saveUsers(map);
+  }
+
+  /* Granting or revoking admin is the owner's call alone. `force` exists for
+     one path only: entering the correct access password from the gate, which
+     is how the very first owner comes into existence. */
+  function setAdminAs(uid, on, force) {
+    var map = allUsers();
+    if (!map[uid]) return false;
+    if (!force && !isOwner()) return false;
+    if (on) {
+      map[uid].admin = true;
+      // The first admin ever promoted owns the console, and this path will not
+      // mint a second one. Ownership only ever moves through setOwnerAs, which
+      // is gated on the admin password.
+      var hasOwner = Object.keys(map).some(function (k) { return map[k].owner === true; });
+      if (!hasOwner) map[uid].owner = true;
+    } else {
+      if (map[uid].owner === true) return false;   // the owner cannot be removed
+      delete map[uid].admin;
+      delete map[uid].perms;
+    }
+    return saveUsers(map);
+  }
+
+  function setAdmin(uid, on) { return setAdminAs(uid, on, false); }
+
+  /* ------------------------------------------------------- owner handover
+     The console has one owner at a time, and becoming that owner is gated on
+     the admin password - not on the current admin role. A secondary admin can
+     ask for the role, but only the right password grants it, so an open
+     browser session alone is never enough. Granting it hands the console
+     across: the previous owner stays an admin but loses the owner flag and
+     starts again with every permission off, and the new owner holds them all.
+
+     Stepping down works the same way and needs the password too, which is also
+     why it is safe: whoever claims the role next has to know the password, so
+     a console can never end up with nobody able to manage admins. */
+  function setOwnerAs(uid, on, pw) {
+    var map = allUsers();
+    if (!map[uid]) return Promise.reject({ message: 'No such account' });
+    if (!isAdmin()) return Promise.reject({ message: 'Only an admin can change the first admin' });
+    return checkAdminPassword(pw).then(function () {
+      var m = allUsers();
+      if (!m[uid]) return Promise.reject({ message: 'No such account' });
+      if (on) {
+        // One owner only - the console moves rather than forks.
+        Object.keys(m).forEach(function (k) { if (k !== uid) delete m[k].owner; });
+        m[uid].admin = true;
+        m[uid].owner = true;
+        delete m[uid].perms;      // the owner holds every permission by role
+      } else if (m[uid].owner === true) {
+        delete m[uid].owner;
+      }
+      if (!saveUsers(m)) return Promise.reject({ message: 'Could not save the account store' });
+      return true;
+    });
+  }
+
+  function ownerUid() {
+    var map = allUsers();
+    var found = Object.keys(map).filter(function (k) { return map[k].owner === true; })[0];
+    return found || '';
+  }
+
+  /* ------------------------------------------------------ admin password
+     One password guards admin access. An account flagged admin walks straight
+     in; anyone else is asked for this before they can become an admin, and
+     the right answer promotes them on the spot.
+
+     It ships as the documented default and is changeable from Admin Settings.
+     The hash lives in this browser, so it stops casual access on a shared
+     machine but is not a security boundary - devtools can read or replace it.
+     Only a server can make it one. */
+  var DEFAULT_ADMIN_PASSWORD = 'admin123';
+
+  function setAdminPassword(pw) {
+    if (!pw || pw.length < 6) {
+      return Promise.reject({ message: 'Use at least 6 characters' });
+    }
+    var salt = randomSalt();
+    return hashPassword(pw, salt).then(function (h) {
+      set(K.adminLock, h);
+      return true;
+    });
+  }
+
+  /* Seeds the documented default on first use, so the console is never
+     unopenable. */
+  function adminPasswordStored() {
+    var stored = get(K.adminLock, '');
+    if (stored) return Promise.resolve(stored);
+    return hashPassword(DEFAULT_ADMIN_PASSWORD, 'bb-admin-default').then(function (h) {
+      set(K.adminLock, h);
+      return h;
+    });
+  }
+
+  function checkAdminPassword(pw) {
+    if (!pw) return Promise.reject({ message: 'Enter the admin password' });
+    return adminPasswordStored().then(function (stored) {
+      return verifyPassword(pw, stored);
+    }).then(function (ok) {
+      if (!ok) return Promise.reject({ message: 'Incorrect admin password' });
+      return true;
+    });
+  }
+
+  function changeAdminPassword(current, next) {
+    if (!current) return Promise.reject({ message: 'Enter the current admin password' });
+    return adminPasswordStored().then(function (stored) {
+      return verifyPassword(current, stored);
+    }).then(function (ok) {
+      if (!ok) return Promise.reject({ message: 'Incorrect admin password' });
+      return setAdminPassword(next);
+    });
+  }
+
+  /* The password is what lets a non-admin into the console. */
+  function unlockAsAdmin(pw) {
+    return checkAdminPassword(pw).then(function () {
+      setAdminAs(get(K.uid, ''), true, true);
+      return true;
+    });
+  }
+
+  /* Same, for the funding wallet of any account. */
+  function adminSetFunding(uid, v) {
+    var map = allUsers();
+    var rec = map[uid];
+    if (!rec) return false;
+    var val = Math.max(0, numv(v));
+    rec.funding = val;
+    if (!saveUsers(map)) return false;
+    if (uid === get(K.uid)) set(K.funding, val);
+    return true;
+  }
+
+  /* Suspend or restore an account. A disabled account keeps its data and its
+     session record but cannot sign in again. */
+  function setDisabled(uid, off) {
+    var map = allUsers();
+    if (!map[uid]) return false;
+    if (off) delete map[uid].disabled; else map[uid].disabled = true;
+    return saveUsers(map);
+  }
+
+  function isDisabled(uid) {
+    var map = allUsers();
+    return !!(map[uid] && map[uid].disabled === true);
+  }
+
+  function adminSetCash(uid, v) {
+    var map = allUsers();
+    var rec = map[uid];
+    if (!rec) return false;
+    var val = Math.max(0, numv(v));
+    rec.cash = val;
+    var a = (rec.assets && typeof rec.assets === 'object') ? rec.assets : emptyAssets();
+    Object.keys(emptyAssets()).forEach(function (c) { if (!a[c]) a[c] = emptyAssets()[c]; });
+    a.USDT = { balance: val, qty: val };
+    rec.assets = a;
+    if (!saveUsers(map)) return false;
+    // Keep the live session's mirrored keys in step when it is the same user.
+    if (uid === get(K.uid)) { set(K.cash, val); set(K.assets, JSON.stringify(a)); }
+    return true;
+  }
+
+  /* Same, for one coin of any account - used when a deposit is approved. */
+  function adminAddAsset(uid, coin, qty) {
+    var map = allUsers();
+    var rec = map[uid];
+    if (!rec) return false;
+    var a = (rec.assets && typeof rec.assets === 'object') ? rec.assets : emptyAssets();
+    var fresh = emptyAssets();
+    Object.keys(fresh).forEach(function (c) { if (!a[c]) a[c] = fresh[c]; });
+    a[coin] = a[coin] || { balance: 0, qty: 0 };
+    a[coin].qty = Math.max(0, numv(a[coin].qty) + numv(qty));
+    a[coin].balance = a[coin].qty;
+    rec.assets = a;
+    if (!saveUsers(map)) return false;
+    if (uid === get(K.uid)) set(K.assets, JSON.stringify(a));
+    return true;
+  }
+
+  /* Every account on file, oldest first. */
+  function allAccounts() {
+    var map = allUsers();
+    return Object.keys(map).map(function (k) { return map[k]; })
+      .sort(function (a, b) { return (a.created || 0) - (b.created || 0); });
+  }
+
+  /* Remove an account and everything it owns. Refuses on the owner, and on the
+     last admin, so the console can never be locked out with no way back in.
+     Always returns a promise so callers do not have to handle a bare boolean. */
+  function deleteAccount(uid) {
+    var map = allUsers();
+    if (!map[uid]) return Promise.reject({ message: 'No such account' });
+    if (map[uid].owner === true) return Promise.reject({ message: 'The console owner cannot be deleted' });
+    var admins = Object.keys(map).filter(function (k) { return map[k].admin === true; });
+    if (map[uid].admin === true && admins.length <= 1) {
+      return Promise.reject({ message: 'Cannot delete the last remaining admin' });
+    }
+    delete map[uid];
+    if (!saveUsers(map)) return Promise.reject({ message: 'Could not save the account store' });
+    // Ledgers, positions and per-user preferences.
+    ['bb_activity', 'bb_deposit_requests', 'bb_withdrawal_requests', 'bb_transfer_requests',
+     'bb_convert_requests', 'bb_borrow_requests', 'bb_trade_requests', 'bb_trades_history',
+     'bb_trade_positions', 'bb_login_log'].forEach(function (key) {
+      var list = readJSON(key, null);
+      if (!Array.isArray(list)) return;
+      var kept = list.filter(function (r) { return (r.uid || r.userId) !== uid; });
+      writeJSON(key, kept);
+    });
+    ['bb_notifications', 'bb_preferences'].forEach(function (key) {
+      var rec = readJSON(key, null);
+      if (rec && typeof rec === 'object' && rec[uid]) { delete rec[uid]; writeJSON(key, rec); }
+    });
+    return Promise.resolve(true);
+  }
+
+  function cash() {
+    var rec = currentRecord();
+    if (rec && rec.cash !== undefined && rec.cash !== null) return numv(rec.cash);
+    return numv(get(K.cash, '0'));
+  }
+
+  function assets() {
+    var rec = currentRecord();
+    var a = (rec && rec.assets && typeof rec.assets === 'object') ? rec.assets : readJSON(K.assets, null);
+    if (!a || typeof a !== 'object') a = emptyAssets();
+    var fresh = emptyAssets();
+    Object.keys(fresh).forEach(function (c) {
+      if (!a[c] || typeof a[c] !== 'object') a[c] = fresh[c];
+    });
+    a.USDT = { balance: cash(), qty: cash() };
+    return a;
+  }
+
+  function syncPortfolio() {
+    var rec = currentRecord();
+    var a = assets();
+    set(K.cash, cash());
+    set(K.assets, JSON.stringify(a));
+    if (rec) { rec.cash = cash(); rec.assets = a; persist(rec); }
+  }
+
+  /* Funding wallet (USDT only). Kept on the account record so one user can
+     never inherit another user's balance; the old flat key is only read once
+     as a migration source. */
+  function funding() {
+    var rec = currentRecord();
+    if (!rec) return 0;
+    if (rec.funding === undefined || rec.funding === null) {
+      var legacy = readJSON(K.funding, null);
+      rec.funding = (legacy === null || !isFinite(legacy)) ? 0 : Math.max(0, numv(legacy));
+      persist(rec);
+    }
+    return Math.max(0, numv(rec.funding));
+  }
+
+  function setFunding(v) {
+    var val = Math.max(0, numv(v));
+    set(K.funding, val);
+    var rec = currentRecord();
+    if (rec) { rec.funding = val; persist(rec); }
+    return val;
+  }
+
+  function numv(v) { var n = parseFloat(v); return isFinite(n) ? n : 0; }
+
+  function setCash(v) {
+    var rec = currentRecord();
+    var val = Math.max(0, numv(v));
+    if (rec) { rec.cash = val; persist(rec); }
+    set(K.cash, val);
+    var a = assets();
+    a.USDT = { balance: val, qty: val };
+    set(K.assets, JSON.stringify(a));
+    if (rec) { rec.assets = a; persist(rec); }
+    return val;
+  }
+
+  function setAssetQty(sym, qty) {
+    var rec = currentRecord();
+    var a = assets();
+    a[sym] = { balance: numv(qty), qty: numv(qty) };
+    if (sym === 'USDT') { set(K.cash, a.USDT.qty); if (rec) rec.cash = a.USDT.qty; }
+    set(K.assets, JSON.stringify(a));
+    if (rec) { rec.assets = a; persist(rec); }
+    return a;
+  }
+
+  var activity = {
+    add: function (kind, row) {
+      var key = 'bb_' + kind + '_requests';
+      var list = readJSON(key, []) || [];
+      row.userId = get(K.uid, '');
+      row.time = row.time || Date.now();
+      list.unshift(row);
+      writeJSON(key, list.slice(0, 200));
+    },
+    list: function (kind) {
+      var uid = get(K.uid, '');
+      var list = readJSON('bb_' + kind + '_requests', []) || [];
+      return list.filter(function (r) {
+        return (!r.userId && !uid) || String(r.userId) === String(uid);
+      });
+    }
+  };
+
+  global.BitbaseAuth = {
+    KEYS: K,
+    COINS: COINS,
+    EMAIL_RE: EMAIL_RE,
+    get: get, set: set, del: del,
+    readJSON: readJSON, writeJSON: writeJSON,
+    register: register,
+    login: login,
+    resetPassword: resetPassword,
+    changePassword: changePassword,
+    logout: logout,
+    currentUser: currentUser,
+    isAdmin: isAdmin,
+    setAdmin: setAdmin,
+    setOwnerAs: setOwnerAs,
+    PERMISSIONS: PERMISSIONS,
+    PERM_KEYS: PERM_KEYS,
+    isOwner: isOwner,
+    ownerUid: ownerUid,
+    adminPerms: adminPerms,
+    adminCan: adminCan,
+    setAdminPerms: setAdminPerms,
+    DEFAULT_ADMIN_PASSWORD: DEFAULT_ADMIN_PASSWORD,
+    setAdminPassword: setAdminPassword,
+    checkAdminPassword: checkAdminPassword,
+    changeAdminPassword: changeAdminPassword,
+    unlockAsAdmin: unlockAsAdmin,
+    setDisabled: setDisabled,
+    isDisabled: isDisabled,
+    adminSetCash: adminSetCash,
+    adminAddAsset: adminAddAsset,
+    adminSetFunding: adminSetFunding,
+    allAccounts: allAccounts,
+    deleteAccount: deleteAccount,
+    isAuthenticated: isAuthenticated,
+    displayName: displayName,
+    cash: cash, setCash: setCash,
+    funding: funding, setFunding: setFunding,
+    assets: assets, setAssetQty: setAssetQty,
+    activity: activity,
+    storageAvailable: function () { return !!ls(); },
+    storagePersistent: storagePersistent
+  };
+})(window);
