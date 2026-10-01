@@ -719,13 +719,84 @@
       return t.id + '|' + (t.messages || []).length + '|' + num(t.updated) + '|' + t.status;
     }
 
-    function say(text, who, name, time) {
+    /* Pictures are downscaled before they are written. The whole thread lives
+       in localStorage, and a modern phone photo base64-encoded would eat the
+       quota on its own, so anything over 1000px is re-encoded as a modest JPEG.
+       Nothing is uploaded anywhere - there is no server in this build. */
+    var MAX_EDGE = 1000;
+
+    function shrink(src) {
+      return new Promise(function (res, rej) {
+        var img = new Image();
+        img.onload = function () {
+          try {
+            var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+            var scale = Math.min(1, MAX_EDGE / Math.max(w, h));
+            var c = document.createElement('canvas');
+            c.width = Math.max(1, Math.round(w * scale));
+            c.height = Math.max(1, Math.round(h * scale));
+            var ctx = c.getContext('2d');
+            ctx.drawImage(img, 0, 0, c.width, c.height);
+            res(c.toDataURL('image/jpeg', 0.72));
+          } catch (e) { rej(e); }
+        };
+        img.onerror = function () { rej(new Error('unreadable image')); };
+        img.src = src;
+      });
+    }
+
+    function notice(text) {
+      var d = document.createElement('div');
+      d.className = 'support-hint';
+      d.style.padding = '12px';
+      d.textContent = text;
+      body.appendChild(d);
+      body.scrollTop = body.scrollHeight;
+    }
+
+    /* Click to enlarge, same as every other gallery on the platform. */
+    function zoom(src) {
+      var o = document.createElement('div');
+      o.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.92);' +
+        'display:flex;align-items:center;justify-content:center;padding:16px;cursor:zoom-out';
+      var i = document.createElement('img');
+      i.src = src;
+      i.alt = 'Sent picture';
+      i.style.cssText = 'max-width:100%;max-height:100%;border-radius:8px';
+      o.appendChild(i);
+      o.addEventListener('click', function () { o.remove(); });
+      document.body.appendChild(o);
+    }
+
+    function say(text, who, name, time, image) {
       var d = document.createElement('div');
       d.className = 'support-msg ' + who;
+      if (image) {
+        var img = document.createElement('img');
+        img.src = image;
+        img.alt = 'Sent picture';
+        img.style.cssText = 'display:block;width:100%;max-height:220px;object-fit:cover;' +
+          'border-radius:8px;cursor:zoom-in;margin-bottom:' + (text ? '8px' : '0');
+        img.addEventListener('click', function () { zoom(image); });
+        d.appendChild(img);
+      }
+      if (text) {
+        var bodyText = document.createElement('div');
+        bodyText.style.whiteSpace = 'pre-wrap';
+        bodyText.textContent = text;
+        d.appendChild(bodyText);
+      }
+      if (name) {
+        var who2 = document.createElement('div');
+        who2.className = 'msg-who';
+        who2.textContent = name;
+        d.appendChild(who2);
+      }
       var t = new Date(time || Date.now());
-      d.innerHTML = global.BitbaseShell.esc(text) +
-        (name ? '<div class="msg-who">' + global.BitbaseShell.esc(name) + '</div>' : '') +
-        '<div class="msg-time">' + ('0' + t.getHours()).slice(-2) + ':' + ('0' + t.getMinutes()).slice(-2) + '</div>';
+      var tm = document.createElement('div');
+      tm.className = 'msg-time';
+      tm.textContent = ('0' + t.getHours()).slice(-2) + ':' + ('0' + t.getMinutes()).slice(-2);
+      d.appendChild(tm);
       body.appendChild(d);
     }
 
@@ -738,6 +809,7 @@
           time: num(m.time),
           who: fromAdmin ? 'agent' : 'user',
           text: m.body,
+          image: m.image || '',
           // The stored name is the console operator's account, which is an
           // internal role. The customer only ever sees "Support".
           name: fromAdmin ? 'Support' : ''
@@ -754,7 +826,7 @@
         body.appendChild(hint);
         return;
       }
-      rows.forEach(function (r) { say(r.text, r.who, r.name, r.time); });
+      rows.forEach(function (r) { say(r.text, r.who, r.name, r.time, r.image); });
       body.scrollTop = body.scrollHeight;
     }
 
@@ -769,10 +841,12 @@
     $('#supportClose').addEventListener('click', toggle);
 
     /* Writes one user line onto this user's ticket. This is the only path that
-       creates a conversation, and it runs for every message - previously a
-       thread was only opened when the user happened to type one of a few
-       trigger words, so most questions never reached the console. */
-    function pushUserMessage(text) {
+       creates a conversation, and it runs for every message and every picture -
+       previously a thread was only opened when the user happened to type one of
+       a few trigger words, so most questions never reached the console.
+       Returns false when the browser refused the write, so a picture that will
+       not fit is reported instead of silently vanishing. */
+    function pushUserMessage(text, image) {
       var me = myUid();
       var rec = A.readJSON(A.KEYS.users, {})[me] || {};
       var all = allThreads();
@@ -802,23 +876,61 @@
       t.name = rec.name || t.name;
       t.email = rec.email || t.email;
       t.messages = Array.isArray(t.messages) ? t.messages : [];
-      t.messages.push({ from: 'user', uid: me, name: rec.name || 'User', body: text, time: Date.now() });
-      A.writeJSON(THREADS_KEY, all.slice(0, 300));
-      return t;
+      t.messages.push({
+        from: 'user', uid: me, name: rec.name || 'User',
+        body: text || '',
+        image: image || null,
+        time: Date.now()
+      });
+      return A.writeJSON(THREADS_KEY, all.slice(0, 300));
     }
 
     /* One click, one message. Nothing is added on the user's behalf, so the
-       thread contains only what people actually typed. */
+       thread contains only what people actually typed or attached. */
     function send() {
       var input = $('#supportInput');
       var v = String(input.value || '').trim();
       if (!v) return;
       input.value = '';
-      pushUserMessage(v);
-      paint();
+      if (pushUserMessage(v)) paint();
     }
     $('#supportSend').addEventListener('click', send);
     $('#supportInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') send(); });
+
+    /* Pictures: pick one, it is shrunk, attached to the same ticket and shown
+       straight away. Anything typed but not yet sent rides along as a caption. */
+    var picker = $('#supportAttach');
+    var fileBox = $('#supportFile');
+    if (picker && fileBox) {
+      picker.addEventListener('click', function () {
+        fileBox.value = '';       // so picking the same file twice still fires
+        fileBox.click();
+      });
+      fileBox.addEventListener('change', function () {
+        var f = fileBox.files && fileBox.files[0];
+        if (!f) return;
+        if (String(f.type).indexOf('image/') !== 0) {
+          notice('Only image files can be sent here.');
+          return;
+        }
+        var reader = new FileReader();
+        reader.onload = function () {
+          shrink(reader.result).then(function (dataUrl) {
+            var caption = String($('#supportInput').value || '').trim();
+            $('#supportInput').value = '';
+            if (!pushUserMessage(caption, dataUrl)) {
+              notice('That picture was too large to save. Try a smaller image.');
+              return;
+            }
+            paint();
+          }).catch(function () {
+            notice('That picture could not be read.');
+          });
+        };
+        reader.onerror = function () { notice('That picture could not be read.'); };
+        reader.readAsDataURL(f);
+      });
+    }
 
     paint();
     // Agent replies are written by the console into the same browser store, so

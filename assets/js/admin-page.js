@@ -414,6 +414,13 @@
     return msgs[msgs.length - 1].from !== 'admin';
   }
 
+  /* Only real image data URLs are ever put in an attribute - a stored thread is
+     browser data, so it is not trusted to hold a javascript: or remote URL. */
+  function imgSrc(v) {
+    var s = String(v || '');
+    return /^data:image\/(png|jpe?g|gif|webp|bmp);/i.test(s) ? s : '';
+  }
+
   function viewSupport() {
     var threads = supportThreads();
     var out = threads.filter(function (t) {
@@ -456,20 +463,27 @@
           '</span>' +
           '<span class="am-conv-prev">' +
             (fromUser ? '<span class="am-dot"></span>' : '<span class="am-dot admin"></span>') +
-            '<span class="am-conv-snip">' + esc((last && last.body ? last.body : '').slice(0, 54)) + '</span>' +
+            '<span class="am-conv-snip">' +
+              esc((last && last.body ? last.body : '').slice(0, 54) ||
+                (last && imgSrc(last.image) ? 'Picture sent' : '')) +
+            '</span>' +
           '</span>' +
         '</span></div>';
     }).join('');
 
     var head;
     if (thread) {
-      var msgsHtml = (thread.messages || []).slice().sort(function (a, b) {
+      var ordered = (thread.messages || []).slice().sort(function (a, b) {
         return num(a.time) - num(b.time);
-      }).map(function (m) {
+      });
+      var msgsHtml = ordered.map(function (m, i) {
         var isAdmin = m.from === 'admin';
+        var src = imgSrc(m.image);
         return '<div class="am-msg ' + (isAdmin ? 'a' : 'u') + '">' +
           '<div class="who">' + esc(isAdmin ? 'Admin' : (m.name || 'User')) + '</div>' +
-          '<div class="bd">' + esc(m.body) + '</div>' +
+          (src ? '<img class="am-msg-img" src="' + esc(src) + '" alt="Picture from ' +
+            esc(m.name || 'the user') + '" data-msgimg="' + esc(t.id) + ':' + i + '">' : '') +
+          (m.body ? '<div class="bd">' + esc(m.body) + '</div>' : '') +
           '<div class="tm">' + when(m.time) + '</div></div>';
       }).join('');
 
@@ -1727,6 +1741,23 @@
     });
     var back = $('#amConvBack');
     if (back) back.addEventListener('click', function () { supportOpen = null; render(); });
+    /* A picture opens full size rather than cropped to the bubble. */
+    $$('[data-msgimg]').forEach(function (img) {
+      img.addEventListener('click', function () {
+        var parts = String(img.dataset.msgimg).split(':');
+        var t = list('bb_support_threads').filter(function (x) { return x.id === parts[0]; })[0];
+        if (!t) return;
+        var ordered = (t.messages || []).slice().sort(function (a, b) { return num(a.time) - num(b.time); });
+        var m = ordered[parseInt(parts[1], 10)];
+        var src = imgSrc(m && m.image);
+        if (!src) return;
+        modal('Picture from ' + (nameOf(t.uid) || 'user'),
+          '<img src="' + esc(src) + '" alt="Sent picture" ' +
+          'style="display:block;width:100%;border-radius:8px;">' +
+          (m.body ? '<p style="font-size:13px;color:#9a9a9a;margin:14px 0 0;">' + esc(m.body) + '</p>' : ''),
+          function () {});
+      });
+    });
     $$('[data-sact]').forEach(function (b) {
       b.addEventListener('click', function () {
         var id = b.dataset.th;
