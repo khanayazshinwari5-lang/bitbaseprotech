@@ -161,5 +161,81 @@
     return true;
   }
 
-  global.BitbaseShell = { mount: mount, NAV: NAV, BOTTOM: BOTTOM, esc: esc, paintIdentity: paintIdentity };
+  /* --------------------------------------------------------- attachments
+     Proof of payment, proof of income and identity documents are all picked the
+     same way and all travel with their request, so one reader handles them.
+
+     An image is drawn down to fit a byte budget before it is inlined. A phone
+     screenshot is several megabytes, which is why the old path gave up and
+     stored nothing but the file name - and a name is exactly what an admin
+     cannot review. A file the browser will not decode, or one still too big
+     after shrinking, falls back to its name so the request still records that
+     something was attached. */
+  var IMG_MAX_EDGE = 1400;
+  var IMG_BUDGET = 700 * 1024;
+
+  function readDataUrl(file) {
+    return new Promise(function (resolve, reject) {
+      var rd = new FileReader();
+      rd.onload = function () { resolve(String(rd.result || '')); };
+      rd.onerror = function () { reject(rd.error || new Error('The file could not be read.')); };
+      rd.readAsDataURL(file);
+    });
+  }
+
+  function shrinkImage(file) {
+    return readDataUrl(file).then(function (src) {
+      return new Promise(function (resolve) {
+        var img = new Image();
+        img.onload = function () {
+          try {
+            var w = img.naturalWidth || img.width || 0;
+            var h = img.naturalHeight || img.height || 0;
+            if (!w || !h) { resolve(src); return; }
+            var scale = Math.min(1, IMG_MAX_EDGE / Math.max(w, h));
+            var canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.round(w * scale));
+            canvas.height = Math.max(1, Math.round(h * scale));
+            var ctx = canvas.getContext('2d');
+            if (!ctx) { resolve(src); return; }
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            var q = 0.82, out = canvas.toDataURL('image/jpeg', q);
+            // Ease the quality down rather than throw the picture away.
+            while (out.length > IMG_BUDGET && q > 0.34) {
+              q -= 0.12;
+              out = canvas.toDataURL('image/jpeg', q);
+            }
+            resolve(out);
+          } catch (e) { resolve(src); }
+        };
+        img.onerror = function () { resolve(src); };
+        img.src = src;
+      });
+    });
+  }
+
+  /* Resolves to { name, type, size, at, data, truncated } where `data` is a
+     data: URL when the file could be inlined and null when it could not. */
+  function readAttachment(file) {
+    if (!file) return Promise.resolve(null);
+    var rec = { name: file.name || 'attachment', type: file.type || '',
+                size: file.size || 0, at: Date.now(), data: null, truncated: false };
+    if (/^image\//i.test(rec.type)) {
+      return shrinkImage(file).then(function (data) {
+        if (data && data.length <= IMG_BUDGET) rec.data = data; else rec.truncated = true;
+        return rec;
+      }, function () { rec.truncated = true; return rec; });
+    }
+    if (/^application\/pdf$/i.test(rec.type)) {
+      return readDataUrl(file).then(function (data) {
+        if (data && data.length <= IMG_BUDGET) rec.data = data; else rec.truncated = true;
+        return rec;
+      }, function () { rec.truncated = true; return rec; });
+    }
+    rec.truncated = true;
+    return Promise.resolve(rec);
+  }
+
+  global.BitbaseShell = { mount: mount, NAV: NAV, BOTTOM: BOTTOM, esc: esc, paintIdentity: paintIdentity,
+    readAttachment: readAttachment };
 })(window);

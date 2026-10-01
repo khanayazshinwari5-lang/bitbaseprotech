@@ -123,6 +123,14 @@ body {
 .am-mono { font-family: 'IBM Plex Mono', monospace; }
 .am-id { color: var(--accent-orange); font-family: 'IBM Plex Mono', monospace; font-weight: 600; font-size: 12px; }
 .am-addr { color: #5b8def; font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+/* A withdrawal address is the whole instruction for sending money, so it is
+   shown in full and wraps rather than being clipped to fit the column. */
+.am-addr-wrap {
+  font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; color: #5b8def;
+  word-break: break-all; white-space: normal; line-height: 1.55;
+  max-width: 260px; display: block;
+}
+.am-addr-actions { display: flex; gap: 6px; margin-top: 7px; }
 .am-right { text-align: right; }
 .am-center { text-align: center; }
 .am-empty { text-align: center; padding: 44px 20px; color: #6a6a6a; font-size: 13px; }
@@ -390,6 +398,9 @@ body {
   width: 100%; max-width: 520px; max-height: 88vh; overflow-y: auto;
 }
 .am-modal .box h3 { font-family: 'Space Grotesk', sans-serif; font-size: 18px; margin: 0; }
+/* Proofs and identity documents are unreadable in the text-width default, so
+   those modals opt into a wider box. */
+.am-modal .box.wide { max-width: 940px; }
 .am-modal .hd {
   padding: 18px 22px; border-bottom: 1px solid #222;
   display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
@@ -399,6 +410,60 @@ body {
 .am-x:hover { color: #fff; }
 .am-err { color: #f05a63; font-size: 13px; margin-top: 12px; }
 .am-ok { color: #2fd6a0; font-size: 13px; margin-top: 12px; }
+
+/* ------------------------------------------------------- attachments */
+/* A table cell that holds an attached picture: a thumbnail to recognise it by
+   and a button that opens it full size. */
+.am-attach { display: flex; align-items: center; gap: 9px; }
+.am-thumb {
+  width: 36px; height: 36px; flex: 0 0 36px; border-radius: 8px; object-fit: cover;
+  border: 1px solid #2a2a2a; background: #111; display: block; cursor: zoom-in;
+}
+.am-thumb.doc {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: 700; letter-spacing: .05em; color: #6a6a6a;
+  cursor: default;
+}
+.am-file {
+  display: inline-block; max-width: 190px; font-size: 11px; color: #7a7a7a;
+  font-family: 'IBM Plex Mono', monospace; word-break: break-all; line-height: 1.5;
+}
+
+/* A document scan in the review modal: caption bar, then the picture at full
+   width of the box. */
+.am-doc { border: 1px solid #2a2a2a; border-radius: 10px; overflow: hidden; background: #111; }
+.am-doc + .am-doc { margin-top: 16px; }
+.am-doc .cap {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 14px; border-bottom: 1px solid #2a2a2a; background: #171717;
+  font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: #7a7a7a; font-family: 'Inter', sans-serif;
+}
+.am-doc img { display: block; width: 100%; height: auto; }
+.am-doc iframe { display: block; width: 100%; height: 68vh; border: 0; background: #fff; }
+.am-doc .none { padding: 26px 14px; text-align: center; color: #5a5a5a; font-size: 13px; }
+
+/* The answers a user typed on the KYC form, laid out so nothing is a sentence
+   long: label above value, two columns on a desktop. */
+.am-kv {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 11px 14px; margin-bottom: 24px;
+}
+.am-kv .kv {
+  border: 1px solid #222; border-radius: 10px; padding: 11px 13px;
+  background: #191919; min-width: 0;
+}
+.am-kv .kv.wide { grid-column: 1 / -1; }
+.am-kv .k {
+  font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+  color: #6a6a6a;
+}
+.am-kv .v {
+  font-size: 13.5px; color: #fff; margin-top: 6px; word-break: break-word;
+  font-family: 'IBM Plex Mono', monospace;
+}
+.am-kv .v.empty { color: #5a5a5a; font-family: 'Inter', sans-serif; font-size: 12.5px; }
+@media (max-width: 720px) { .am-kv { grid-template-columns: minmax(0, 1fr); } }
 
 /* -------------------------------------------------------- placeholders */
 .am-soon {

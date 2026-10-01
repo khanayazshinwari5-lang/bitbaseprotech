@@ -70,17 +70,48 @@
     return (u && u.name) || uid || '\u2014';
   }
 
+  /* How a contract ended, in one place.
+     The trade engine settles a position by writing `won` plus a status of
+     'Won', 'Lost' or 'Closed'; older records carry `result` instead. An admin
+     can also flag an account so every contract settles as a win, and that flag
+     sets the same fields the market normally sets. Reading only one of those
+     spellings is what made a forced win show up here as a loss, so every view
+     below asks this function instead of guessing. */
+  function outcomeOf(t) {
+    if (!t) return 'active';
+    var status = String(t.status || '');
+    var result = String(t.result || '').toLowerCase();
+    if (status === 'Active') return 'active';
+    if (status === 'Won' || t.won === true || result === 'won') return 'won';
+    if (status === 'Lost' || t.won === false || result === 'lost') return 'lost';
+    if (status === 'Closed' || status === 'Cancelled') return 'refunded';
+    // No verdict was recorded at all, so read the move itself.
+    var dir = t.dir === 'UP' ? 1 : -1;
+    if (num(t.exitPrice) && num(t.entryPrice)) {
+      return (num(t.exitPrice) - num(t.entryPrice)) * dir >= 0 ? 'won' : 'lost';
+    }
+    return 'lost';
+  }
+  /* A contract closed by hand refunded the stake at half, so half of it is the
+     loss - the price move never settled. */
+  function outcomeLabel(outcome) {
+    return outcome === 'won' ? ['Won', 'green']
+      : outcome === 'lost' ? ['Lost', 'red']
+      : outcome === 'refunded' ? ['Closed', 'grey']
+      : ['Open', 'orange'];
+  }
+
   /* Net effect of one settled contract, as the app recorded it. */
   function pnlOf(t) {
     if (t.pnl !== undefined && t.pnl !== null && isFinite(t.pnl)) return num(t.pnl);
-    if (t.result === 'won') return num(t.profit);
-    if (t.result === 'lost') return -num(t.profit);
-    if (num(t.exitPrice) && num(t.entryPrice)) {
-      var dir = t.dir === 'UP' ? 1 : -1;
-      var move = (num(t.exitPrice) - num(t.entryPrice)) / num(t.entryPrice);
-      return Math.round(num(t.amt) * move * dir * 100) / 100;
-    }
-    return 0;
+    var outcome = outcomeOf(t);
+    if (outcome === 'active') return 0;
+    if (outcome === 'won') return num(t.profit);
+    if (outcome === 'lost') return -num(t.profit);
+    var refund = num(t.refund);
+    return refund
+      ? Math.round((refund - num(t.amt)) * 100) / 100
+      : -Math.round(num(t.amt) * 50) / 100;
   }
 
   /* Realised P/L per user across real and demo books. */
@@ -225,14 +256,13 @@
     var recent = trades.slice().sort(function (a, b) {
       return num(b.startTime) - num(a.startTime);
     }).slice(0, 15).map(function (t) {
-      var status = t.status === 'Active' ? ['Open', 'orange']
-        : (t.result === 'won' ? ['Won', 'green'] : ['Lost', 'red']);
+      var status = outcomeLabel(outcomeOf(t));
       return '<tr>' +
         '<td><span class="am-id">' + esc(t.id || '\u2014') + '</span></td>' +
         '<td class="am-mono">' + esc(t.pair || '\u2014') + '</td>' +
         '<td>' + esc(t.dir === 'UP' ? 'Buy' : 'Sell') + '</td>' +
         '<td class="am-mono">' + money(t.amt) + '</td>' +
-        '<td>' + pill(status[0], status[1]) + '</td>' +
+        '<td>' + pill(status[0], status[1]) + (t.forced ? ' ' + pill('Profit mode', 'blue') : '') + '</td>' +
         '<td class="am-mono">' + esc(t.mode === 'demo' ? 'demo' : 'real') + '</td>' +
         '<td style="color:#7a7a7a;">' + when(t.startTime) + '</td>' +
         '</tr>';
@@ -253,13 +283,13 @@
       if (userQuery && (a.name + ' ' + a.email + ' ' + a.uid).toLowerCase().indexOf(userQuery) < 0) return false;
       if (userFilter === 'admin') return a.admin;
       if (userFilter === 'disabled') return a.disabled;
-      if (userFilter === 'kyc') return String(a.kyc).toLowerCase() === 'verified';
+      if (userFilter === 'kyc') return kycApproved(a.kyc);
       if (userFilter === 'funded') return a.total > 0;
       return true;
     });
 
     var rows = out.map(function (a) {
-      var kycTone = a.kyc === 'verified' ? 'green' : (a.kyc === 'pending' ? 'orange' : 'grey');
+      var kycTone = kycApproved(a.kyc) ? 'green' : (a.kyc === 'pending' ? 'orange' : 'grey');
       var statusPills = (a.disabled ? pill('Inactive', 'red') : pill('Active', 'green'));
       return '<tr data-uid="' + esc(a.uid) + '">' +
         '<td><span class="am-id">' + esc(a.uid) + '</span></td>' +
@@ -312,9 +342,13 @@
       table(['UID', 'Name', 'Email', 'Cash Balance', 'Total Assets', 'Admin', 'Profit Mode', 'KYC', 'Status', 'Actions'],
         rows, 'No accounts match this filter.');
   }
+  /* 'approved' is what a decided submission writes; 'verified' is the older
+     spelling and still appears on accounts decided before the review panel. */
+  function kycApproved(s) { return ['approved', 'verified'].indexOf(String(s || '').toLowerCase()) >= 0; }
   function kycLabel(s) {
     s = String(s || 'none').toLowerCase();
-    return s === 'verified' ? 'Verified' : (s === 'pending' ? 'Pending' : 'None');
+    if (kycApproved(s)) return 'Verified';
+    return s === 'pending' ? 'Pending' : (s === 'rejected' ? 'Rejected' : 'None');
   }
 
   /* ------------------------------------------------------------- admin team
@@ -541,28 +575,117 @@
       .sort(function (a, b) { return num(b.startTime) - num(a.startTime); });
     var out = trades.filter(function (t) {
       if (tradeFilter === 'all') return true;
-      if (tradeFilter === 'active') return t.status === 'Active';
-      return t.result === tradeFilter;
+      if (tradeFilter === 'active') return outcomeOf(t) === 'active';
+      if (tradeFilter === 'refunded') return outcomeOf(t) === 'refunded';
+      return outcomeOf(t) === tradeFilter;
     });
     var rows = out.map(function (t) {
+      var outcome = outcomeOf(t);
       var pnl = pnlOf(t);
-      var st = t.status === 'Active' ? ['Active', 'orange'] : (t.result === 'won' ? ['Won', 'green'] : ['Lost', 'red']);
+      var st = outcomeLabel(outcome);
       return '<tr>' +
         '<td><span class="am-id">' + esc(t.id || '\u2014') + '</span></td>' +
         '<td class="am-mono">' + esc(t.pair || '\u2014') + '</td>' +
         '<td>' + esc(t.dir === 'UP' ? 'Buy' : 'Sell') + '</td>' +
         '<td class="am-mono">' + money(t.amt) + '</td>' +
-        '<td class="am-mono ' + (t.status === 'Active' ? '' : (pnl >= 0 ? 'am-num-green' : 'am-num-red')) + '">' +
-          (t.status === 'Active' ? '\u2014' : (pnl >= 0 ? '+' : '') + money(pnl)) + '</td>' +
-        '<td>' + pill(st[0], st[1]) + '</td>' +
+        '<td class="am-mono ' + (outcome === 'active' ? '' : (pnl >= 0 ? 'am-num-green' : 'am-num-red')) + '">' +
+          (outcome === 'active' ? '\u2014' : (pnl >= 0 ? '+' : '') + money(pnl)) + '</td>' +
+        '<td>' + pill(st[0], st[1]) + (t.forced ? ' ' + pill('Profit mode', 'blue') : '') + '</td>' +
         '<td class="am-mono">' + esc(t.mode === 'demo' ? 'demo' : 'real') + '</td>' +
         '<td style="color:#7a7a7a;">' + when(t.startTime) + '</td>' +
         '<td class="am-right"><button class="am-btn no" data-act="del-trade" data-id="' + esc(t.id) + '"' + lock('deleteRecords') + '>Delete</button></td>' +
         '</tr>';
     });
-    return filterRow([['all', 'All'], ['active', 'Active'], ['won', 'Won'], ['lost', 'Lost']], tradeFilter, 'data-tfilter') +
+    return filterRow([['all', 'All'], ['active', 'Active'], ['won', 'Won'], ['lost', 'Lost'], ['refunded', 'Closed']],
+      tradeFilter, 'data-tfilter') +
       table(['ID', 'Pair', 'Side', 'Amount', 'Profit', 'Status', 'Source', 'Time', 'Actions'],
         rows, 'No trades match this filter.');
+  }
+
+  /* ------------------------------------------------------- attachments
+     A proof of payment, a payslip and an identity scan all arrive the same
+     way: as an inline data: URL when the file fitted, and as a bare file name
+     when it did not. Older records hold the data URL as a plain string, newer
+     ones a { name, type, data } record, so both shapes are read here and
+     neither ever ends up printed as text in a table cell. */
+  function attachSrc(v) {
+    if (v == null) return '';
+    if (typeof v === 'string') {
+      var s = v.trim();
+      return /^data:(image\/|application\/pdf)/i.test(s) ? s : '';
+    }
+    if (typeof v === 'object') {
+      var d = v.data || v.url || '';
+      return /^data:(image\/|application\/pdf)/i.test(String(d)) ? String(d) : '';
+    }
+    return '';
+  }
+  function attachName(v) {
+    if (v == null) return '';
+    if (typeof v === 'string') return v;
+    return v.name || v.fileName || '';
+  }
+  function isImageSrc(s) { return /^data:image\//i.test(String(s || '')); }
+
+  /* One table cell: a thumbnail where the file is a picture, then a button
+     that opens the whole thing. A file that could not be inlined says so by
+     name instead of pretending there is nothing attached. */
+  function attachCell(value, act, id, label) {
+    var src = attachSrc(value);
+    var name = attachName(value);
+    if (!src) {
+      return name ? '<span class="am-file" title="' + esc(name) + '">' + esc(name) + '</span>' : '\u2014';
+    }
+    var thumb = isImageSrc(src)
+      ? '<img class="am-thumb" src="' + esc(src) + '" alt="' + esc(name || 'attachment') + '">'
+      : '<span class="am-thumb doc">PDF</span>';
+    return '<div class="am-attach">' + thumb +
+      '<button class="am-btn info" data-act="' + esc(act) + '" data-id="' + esc(id) + '">' + esc(label || 'View') + '</button></div>';
+  }
+
+  /* Open an attachment on its own. Images fill the wide box, a PDF gets a
+     built-in viewer, and a name-only record says plainly that the picture was
+     never stored rather than showing an empty frame. */
+  function showAttachment(title, subtitle, value) {
+    var src = attachSrc(value);
+    var name = attachName(value);
+    var body = '';
+    if (subtitle) {
+      body += '<p style="color:#7a7a7a;font-size:12.5px;margin:0 0 16px;">' + esc(subtitle) + '</p>';
+    }
+    if (!src) {
+      body += '<p style="color:#9a9a9a;font-size:13.5px;line-height:1.7;">Only the file name was saved with this request, ' +
+        'so there is nothing to open.<br><span class="am-file" style="max-width:none;">' + esc(name || '\u2014') + '</span></p>';
+    } else if (isImageSrc(src)) {
+      body += '<img src="' + esc(src) + '" alt="' + esc(title) + '" ' +
+        'style="display:block;width:100%;height:auto;border-radius:10px;border:1px solid #2a2a2a;">';
+    } else {
+      body += '<iframe src="' + esc(src) + '" title="' + esc(title) + '" ' +
+        'style="display:block;width:100%;height:68vh;border:1px solid #2a2a2a;border-radius:10px;background:#fff;"></iframe>';
+    }
+    if (src && name) {
+      body += '<p style="color:#5a5a5a;font-size:11px;margin:14px 0 0;' +
+        'font-family:\'IBM Plex Mono\',monospace;word-break:break-all;">' + esc(name) + '</p>';
+    }
+    modal(title, body, function () {}, true);
+  }
+
+  /* The display id a request row is keyed by. Deposits, withdrawals and loans
+
+     are stored without one, so it is derived here and both the table and the
+     buttons below go through the same function - that is what lets a View
+     button find the record it was rendered from. */
+  function requestId(kind, r) {
+    var uid = r.uid || r.userId || '';
+    var prefix = kind === 'withdrawal' ? 'WD' : (kind === 'deposit' ? 'DEP' : 'LOAN');
+    return prefix + '-' + (kind === 'borrow' ? '' : shortId(uid) + '-') + (r.time || 0);
+  }
+  function findRequest(kind, id) {
+    var arr = list('bb_' + kind + '_requests');
+    for (var i = 0; i < arr.length; i++) {
+      if (requestId(kind, arr[i]) === id) return arr[i];
+    }
+    return null;
   }
 
   /* --------------------------------------------------------- withdrawals */
@@ -575,14 +698,14 @@
     var reqs = list('bb_withdrawal_requests').map(function (r) {
       var uid = r.uid || r.userId || '';
       return {
-        id: 'WD-' + shortId(uid) + '-' + (r.time || Date.now()),
+        id: requestId('withdrawal', r),
         uid: uid, name: byUid[uid] ? byUid[uid].name : nameOf(uid),
         coin: r.coin || 'USDT',
         amount: num(r.amount),
         usd: num(r.usd !== undefined ? r.usd : r.amount * num(r.price)),
         fee: num(r.fee),
         network: r.network || netOf(r.coin),
-        address: r.address || '\u2014',
+        address: String(r.address == null || r.address === '' ? '\u2014' : r.address).trim() || '\u2014',
         status: r.status || 'pending',
         time: r.time
       };
@@ -601,7 +724,13 @@
         '<td class="am-num-orange">' + qty(r.amount, 4) + '</td>' +
         '<td class="am-mono">' + qty(r.fee, 4) + '</td>' +
         '<td class="am-mono">' + esc(r.network) + '</td>' +
-        '<td><span class="am-addr">' + esc(String(r.address).slice(0, 18)) + (String(r.address).length > 18 ? '\u2026' : '') + '</span></td>' +
+        /* The whole address, wrapped. It is the instruction for sending real
+           money, so clipping it is not an option. */
+        '<td><span class="am-addr-wrap" title="' + esc(r.address) + '">' + esc(r.address) + '</span>' +
+          '<span class="am-addr-actions">' +
+            '<button class="am-btn info" data-act="wd-copy" data-addr="' + esc(r.address) + '">Copy</button>' +
+            '<button class="am-btn" data-act="wd-view" data-id="' + esc(r.id) + '">Full</button>' +
+          '</span></td>' +
         '<td>' + pill(cap(r.status), tone) + '</td>' +
         '<td style="color:#7a7a7a;">' + when(r.time) + '</td>' +
         '<td class="am-right">' + withdrawalAction(r) + '</td>' +
@@ -638,14 +767,14 @@
       var rate = num(r.rate);
       var interest = num(r.interest) || num(r.amount) * rate;
       return {
-        id: 'LOAN-' + (r.time || Date.now()),
+        id: requestId('borrow', r),
         uid: uid, name: byUid[uid] ? byUid[uid].name : nameOf(uid),
         amount: num(r.amount), days: num(r.days),
         rate: rate > 1 ? rate / 100 : rate,
         interest: interest,
         total: num(r.amount) + interest,
         due: num(r.due),
-        proof: r.proof || null,
+        proof: r.proof || r.proofName || null,
         status: r.status || 'pending',
         time: r.time
       };
@@ -670,7 +799,7 @@
         '<td class="am-mono">' + (r.rate * 100).toFixed(1) + '%</td>' +
         '<td class="am-num-orange">' + money(r.interest) + '</td>' +
         '<td class="am-mono">' + money(r.total) + '</td>' +
-        '<td style="font-size:11px;color:#7a7a7a;">' + (r.proof ? esc(String(r.proof).slice(0, 22)) : '\u2014') + '</td>' +
+        '<td>' + attachCell(r.proof, 'loan-proof', r.id) + '</td>' +
         '<td>' + pill(st[0], st[1]) + '</td>' +
         '<td style="color:#7a7a7a;">' + when(r.time) + '</td>' +
         '<td style="white-space:nowrap;">' + loanAction(r) + '</td>' +
@@ -698,41 +827,90 @@
   /* ----------------------------------------------------------------- kyc */
   var kycFilter = 'all';
 
-  function viewKyc() {
+  /* Everything a submission is made of, in one shape.
+     A queued request and a profile that merely says "pending" are two different
+     stores, so they are merged here rather than in the view - the table, the
+     review panel and the approve/reject buttons all read the same row, and the
+     answer the user typed on the KYC form is carried on the request itself
+     rather than left on a profile column nobody syncs. */
+  function kycRows() {
     var acc = accounts();
     var byUid = {};
     acc.forEach(function (a) { byUid[a.uid] = a; });
-    var reqs = list('bb_kyc_requests');
-    // Fold in accounts whose record says pending, in case a submission was
-    // recorded without a queued request.
-    acc.forEach(function (a) {
-      if (a.kyc === 'pending' && !reqs.some(function (r) { return r.uid === a.uid; })) {
-        reqs.push({
-          id: 'KYC-' + shortId(a.uid) + '-' + (a.created || Date.now()),
-          uid: a.uid, name: a.name, email: a.email,
-          nationality: a.rec.kyc_country || a.country || '',
-          docType: a.rec.kyc_doc_type || 'Passport',
-          status: 'pending', time: a.rec.kyc_submitted || a.created
-        });
-      }
-    });
-    reqs.sort(function (a, b) { return num(b.time) - num(a.time); });
 
-    var out = reqs.filter(function (r) {
+    function build(r) {
+      var uid = r.uid || r.userId || '';
+      var a = byUid[uid] || {};
+      var rec = a.rec || {};
+      var legal = String(r.legalName || '').trim();
+      if (!legal) {
+        var parts = [r.firstName || r.first_name || rec.kyc_first,
+                     r.lastName || r.last_name || rec.kyc_last];
+        legal = parts.filter(Boolean).join(' ').trim();
+      }
+      var docs = r.docs && typeof r.docs === 'object' ? r.docs : {};
+      return {
+        id: r.id || ('KYC-' + shortId(uid) + '-' + (r.time || 0)),
+        uid: uid,
+        account: r.name || a.name || '',
+        legalName: legal,
+        firstName: r.firstName || r.first_name || rec.kyc_first || '',
+        lastName: r.lastName || r.last_name || rec.kyc_last || '',
+        dob: r.dob || r.dateOfBirth || rec.kyc_dob || '',
+        email: r.email || a.email || '',
+        phone: r.phone || rec.phone || '',
+        country: r.country || a.country || '',
+        nationality: r.nationality || r.nationalityCountry || rec.kyc_country || a.country || '',
+        address: r.address || r.street || rec.kyc_address || '',
+        city: r.city || rec.kyc_city || '',
+        postal: r.postal || r.postalCode || r.zip || rec.kyc_postal || '',
+        docType: r.docType || rec.kyc_doc_type || 'Passport',
+        docs: docs,
+        front: docs.front || null,
+        back: docs.back || null,
+        docCount: (docs.front ? 1 : 0) + (docs.back ? 1 : 0),
+        status: r.status || 'pending',
+        time: r.time || 0,
+        decidedAt: r.decidedAt || 0
+      };
+    }
+
+    var rows = list('bb_kyc_requests').map(build);
+    // An account whose record says pending but has no queued request is still
+    // waiting on a decision; fold it in rather than dropping it silently.
+    acc.forEach(function (a) {
+      if (a.kyc !== 'pending') return;
+      if (rows.some(function (r) { return r.uid === a.uid; })) return;
+      rows.push(build({
+        uid: a.uid, name: a.name, email: a.email,
+        time: a.rec.kyc_submitted || a.created || 0,
+        status: 'pending'
+      }));
+    });
+    rows.sort(function (x, y) { return num(y.time) - num(x.time); });
+    return rows;
+  }
+  function findKyc(id) {
+    return kycRows().filter(function (r) { return r.id === id; })[0] || null;
+  }
+
+  function viewKyc() {
+    var out = kycRows().filter(function (r) {
       if (kycFilter === 'all') return true;
-      return (r.status || 'pending') === kycFilter;
+      return r.status === kycFilter;
     });
     var rows = out.map(function (r) {
       var st = r.status === 'approved' ? ['Approved', 'green']
         : r.status === 'rejected' ? ['Rejected', 'red'] : ['Pending', 'orange'];
-      var n = r.docs ? ((r.docs.front ? 1 : 0) + (r.docs.back ? 1 : 0)) : 0;
       return '<tr>' +
         '<td><span class="am-id">' + esc(r.id) + '</span></td>' +
-        '<td>' + esc(r.name || (byUid[r.uid] && byUid[r.uid].name) || 'User') + ' (' + esc(shortId(r.uid)) + ')</td>' +
-        '<td>' + esc(r.name || '\u2014') + '</td>' +
-        '<td>' + esc(r.nationality || '\u2014') + '</td>' +
-        '<td>' + esc(r.docType || 'Passport') + '</td>' +
-        '<td>' + (n ? '<button class="am-btn info" data-act="kyc-docs" data-id="' + esc(r.id) + '">View (' + n + ')</button>' : '\u2014') + '</td>' +
+        '<td>' + esc(r.account || 'User') + ' (' + esc(shortId(r.uid)) + ')</td>' +
+        '<td>' + esc(r.legalName || '\u2014') + '</td>' +
+        '<td>' + esc(r.email || '\u2014') + '</td>' +
+        '<td>' + esc(r.docType) + '</td>' +
+        '<td>' + (r.docCount
+          ? '<button class="am-btn info" data-act="kyc-review" data-id="' + esc(r.id) + '">Review (' + r.docCount + ')</button>'
+          : '<button class="am-btn info" data-act="kyc-review" data-id="' + esc(r.id) + '">Review</button>') + '</td>' +
         '<td>' + pill(st[0], st[1]) + '</td>' +
         '<td style="color:#7a7a7a;">' + when(r.time) + '</td>' +
         '<td class="am-right" style="white-space:nowrap;">' + kycAction(r) + '</td>' +
@@ -740,7 +918,7 @@
     });
     return filterRow([['all', 'All'], ['pending', 'Pending'], ['approved', 'Approved'], ['rejected', 'Rejected']],
       kycFilter, 'data-kfilter') +
-      table(['ID', 'User', 'Name', 'Nationality', 'Doc Type', 'Documents', 'Status', 'Submitted', 'Actions'],
+      table(['ID', 'User', 'Legal Name', 'Email', 'Doc Type', 'Submission', 'Status', 'Submitted', 'Actions'],
         rows, 'No KYC submissions yet.');
   }
   function kycAction(r) {
@@ -748,7 +926,62 @@
     if (s === 'approved') return '<button class="am-btn no" data-act="kyc-reject" data-id="' + esc(r.id) + '"' + lock('reviewKyc') + '>Revoke</button>';
     if (s === 'rejected') return '<button class="am-btn ok" data-act="kyc-approve" data-id="' + esc(r.id) + '"' + lock('reviewKyc') + '>Approve</button>';
     return '<button class="am-btn ok" data-act="kyc-approve" data-id="' + esc(r.id) + '"' + lock('reviewKyc') + '>Approve</button>' +
-      '<button class="am-btn no" data-act="kyc-reject" data-id="' + esc(r.id) + '">Reject</button>';
+      '<button class="am-btn no" data-act="kyc-reject" data-id="' + esc(r.id) + '"' + lock('reviewKyc') + '>Reject</button>';
+  }
+
+  /* One field of the submission, or an honest "not provided". */
+  function kycField(label, value, wide) {
+    var v = String(value == null ? '' : value).trim();
+    return '<div class="kv' + (wide ? ' wide' : '') + '"><div class="k">' + esc(label) + '</div>' +
+      '<div class="v' + (v ? '' : ' empty') + '">' + (v ? esc(v) : 'Not provided') + '</div></div>';
+  }
+  function kycDocBlock(label, value) {
+    var src = attachSrc(value);
+    var name = attachName(value);
+    var cap = '<div class="cap"><span>' + esc(label) + '</span>' +
+      '<span>' + esc(name || (src ? 'inline' : 'nothing attached')) + '</span></div>';
+    var inner = src
+      ? (isImageSrc(src)
+        ? '<img src="' + esc(src) + '" alt="' + esc(label) + '">'
+        : '<iframe src="' + esc(src) + '" title="' + esc(label) + '"></iframe>')
+      : '<div class="none">No ' + esc(label.toLowerCase()) + ' was attached to this submission.</div>';
+    return '<div class="am-doc">' + cap + inner + '</div>';
+  }
+
+  /* The whole submission on one screen: every answer the applicant gave, both
+     scans, and the decision buttons. */
+  function kycReview(id) {
+    var r = findKyc(id);
+    if (!r) { toast('Could not find that submission', 'bad'); return; }
+    var html =
+      '<div class="am-kv">' +
+        kycField('Account name', r.account) +
+        kycField('Account email', r.email) +
+        kycField('Phone', r.phone) +
+        kycField('User ID', r.uid, true) +
+        kycField('Legal name', r.legalName) +
+        kycField('Date of birth', r.dob) +
+        kycField('Nationality', r.nationality) +
+        kycField('Residence', r.country) +
+        kycField('Street address', r.address, true) +
+        kycField('City', r.city) +
+        kycField('Postal code', r.postal) +
+        kycField('Document type', r.docType) +
+      '</div>' +
+      '<div class="am-label" style="margin-bottom:10px;">Documents</div>' +
+      kycDocBlock('Front of document', r.front) +
+      kycDocBlock('Back of document', r.back) +
+      '<div style="display:flex;gap:10px;margin-top:22px;">' + kycAction(r) + '</div>';
+    modal('KYC submission \u00b7 ' + (r.account || shortId(r.uid)), html, function () {
+      $$('#amModalBody [data-act]').forEach(function (b) {
+        b.addEventListener('click', function () {
+          var act = b.dataset.act;
+          if (act !== 'kyc-approve' && act !== 'kyc-reject') return;
+          if (!can('reviewKyc')) { denied('reviewKyc'); return; }
+          if (setKyc(id, act === 'kyc-approve' ? 'approved' : 'rejected')) closeModal();
+        });
+      });
+    }, true);
   }
 
   /* ------------------------------------------------------------ balances */
@@ -827,14 +1060,13 @@
     var reqs = list('bb_deposit_requests').map(function (r) {
       var uid = r.uid || r.userId || '';
       return {
-        id: 'DEP-' + shortId(uid) + '-' + (r.time || Date.now()),
+        id: requestId('deposit', r),
         uid: uid, name: byUid[uid] ? byUid[uid].name : nameOf(uid),
         coin: r.coin || 'USDT', amount: num(r.amount),
         usd: num(r.usd !== undefined ? r.usd : r.amount),
         net: (meta[r.coin] || {}).net || 'ERC20',
         status: r.status || 'pending',
-        net: (meta[r.coin] || {}).net || 'ERC20',
-        proof: r.proof || null,
+        proof: r.proof || r.proofName || null,
         time: r.time
       };
     }).sort(function (a, b) { return num(b.time) - num(a.time); });
@@ -849,7 +1081,7 @@
         '<td class="am-mono">' + qty(r.amount, 6) + '</td>' +
         '<td class="am-num-green">\u2248 ' + money(r.usd) + '</td>' +
         '<td class="am-mono">' + esc(r.net) + '</td>' +
-        '<td>' + (r.proof ? '<button class="am-btn info" data-act="dep-proof" data-id="' + esc(r.id) + '">View</button>' : '\u2014') + '</td>' +
+        '<td>' + attachCell(r.proof, 'dep-proof', r.id) + '</td>' +
         '<td>' + pill(cap(r.status), tone) + '</td>' +
         '<td style="color:#7a7a7a;">' + when(r.time) + '</td>' +
         '<td class="am-right" style="white-space:nowrap;">' + depositAction(r) + '</td>' +
@@ -905,15 +1137,65 @@
     return '<button class="am-btn" data-act="noop">\u2014</button>';
   }
 
+  function byUidName(r) {
+    var uid = (r && (r.uid || r.userId)) || '';
+    var a = accounts().filter(function (x) { return x.uid === uid; })[0];
+    return a ? a.name : nameOf(uid);
+  }
+
   function showDepositProof(id) {
-    var r = findDeposit(id);
-    if (!r || !r.proof) return;
-    var isImg = String(r.proof).indexOf('data:image') === 0;
-    modal('Deposit proof', (r.coin || '') + ' \u00b7 ' + qty(r.amount, 6),
-      isImg
-        ? '<img src="' + esc(r.proof) + '" style="max-width:100%;border-radius:8px;border:1px solid #2a2a2a;" alt="Deposit proof">'
-        : '<p style="color:#9a9a9a;font-size:13.5px;">Attached file: <strong>' + esc(r.proof) + '</strong></p>',
-      function () {});
+    var r = findRequest('deposit', id);
+    if (!r) { toast('Could not find that request', 'bad'); return; }
+    var proof = r.proof || r.proofName;
+    if (!proof) { toast('No proof was attached to that request', 'bad'); return; }
+    var sub = [byUidName(r), r.coin || '', qty(r.amount, 6), r.network || netOf(r.coin)]
+      .filter(Boolean).join(' \u00b7 ');
+    showAttachment('Deposit proof', sub, proof);
+  }
+
+  function showLoanProof(id) {
+    var r = findRequest('borrow', id);
+    if (!r) { toast('Could not find that request', 'bad'); return; }
+    var proof = r.proof || r.proofName;
+    if (!proof) { toast('No proof was attached to that request', 'bad'); return; }
+    var sub = [byUidName(r), money(r.amount), (r.days || 0) + ' days'].filter(Boolean).join(' \u00b7 ');
+    showAttachment('Loan proof of income', sub, proof);
+  }
+
+  /* The whole withdrawal instruction on one screen, unabridged. */
+  function showWithdrawal(id) {
+    var r = findRequest('withdrawal', id);
+    if (!r) { toast('Could not find that request', 'bad'); return; }
+    var uid = r.uid || r.userId || '';
+    var address = String(r.address == null ? '' : r.address).trim() || '\u2014';
+    var html =
+      '<div class="am-kv" style="margin-bottom:18px;">' +
+        kycField('Recipient', byUidName(r) || nameOf(uid)) +
+        kycField('Coin', r.coin || 'USDT') +
+        kycField('Amount', qty(r.amount, 8) + ' ' + (r.coin || 'USDT')) +
+        kycField('Network', r.network || netOf(r.coin)) +
+        kycField('Network fee', qty(r.fee, 8) + ' ' + (r.coin || 'USDT')) +
+        kycField('Approximate value', money(r.usd !== undefined ? r.usd : num(r.amount))) +
+        '<div class="kv wide"><div class="k">Recipient address</div>' +
+          '<div class="v" style="word-break:break-all;line-height:1.7;">' + esc(address) + '</div></div>' +
+      '</div>' +
+      '<div style="display:flex;gap:10px;">' +
+        '<button class="am-btn info" data-act="wd-copy" data-addr="' + esc(address) + '">Copy address</button>' +
+      '</div>';
+    modal('Withdrawal address', html, function () {
+      var b = $('#amModalBody [data-act="wd-copy"]');
+      if (b) b.addEventListener('click', function () { copyText(b.dataset.addr); });
+    });
+  }
+  function copyText(text) {
+    var s = String(text || '');
+    if (!s) { toast('Nothing to copy', 'bad'); return; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(s).then(function () { toast('Address copied', 'ok'); },
+        function () { toast('Copy failed', 'bad'); });
+    } else {
+      toast('Copy not available in this browser', 'bad');
+    }
   }
 
   /* ----------------------------------------------------------- analytics */
@@ -1210,14 +1492,20 @@
     setTimeout(function () { d.remove(); }, 3400);
   }
 
-  function modal(title, html, onMount) {
+  function modal(title, html, onMount, wide) {
     $('#amModalTitle').textContent = title;
     $('#amModalBody').innerHTML = html;
+    var box = $('#amModal .box');
+    if (box) box.classList.toggle('wide', !!wide);
     $('#amModal').classList.add('open');
     if (global.lucide) global.lucide.createIcons();
     if (onMount) onMount();
   }
-  function closeModal() { $('#amModal').classList.remove('open'); }
+  function closeModal() {
+    var box = $('#amModal .box');
+    if (box) box.classList.remove('wide');
+    $('#amModal').classList.remove('open');
+  }
 
   /* A switch row: label, on/off state and a plain-language explanation. */
   /* `locked` renders the row read-only, for a switch whose value is forced by
@@ -1421,13 +1709,17 @@
   function verifyUser(uid) {
     var map = users();
     if (!map[uid]) return;
-    map[uid].kyc_status = 'verified';
-    map[uid].kyc = 'verified';
+    map[uid].kyc_status = 'approved';
+    map[uid].kyc = 'approved';
     map[uid].kyc_verified = true;
     A.writeJSON(A.KEYS.users, map);
-    // Any queued request for this user follows.
+    // Any queued submission for this user follows, matched on either id field
+    // because a request read back from the database carries userId.
     var reqs = list('bb_kyc_requests').map(function (r) {
-      if (r.uid === uid) r.status = 'approved';
+      if ((r.uid || r.userId) === uid) {
+        r.status = 'approved';
+        r.decidedAt = Date.now();
+      }
       return r;
     });
     save('bb_kyc_requests', reqs);
@@ -1466,42 +1758,34 @@
     toast(cap(mode) + ' \u2014 ' + shortId(uid) + ' is now ' + money(after), 'ok');
   }
 
-  function kycDocs(id) {
-    var r = list('bb_kyc_requests').filter(function (x) { return x.id === id; })[0];
-    if (!r) return;
-    var imgs = [];
-    if (r.docs && r.docs.front) imgs.push(['Front', r.docs.front]);
-    if (r.docs && r.docs.back) imgs.push(['Back', r.docs.back]);
-    modal('KYC documents', (r.name || 'User') + ' \u00b7 ' + (r.docType || 'Passport'),
-      imgs.map(function (i) {
-        return '<div style="margin-bottom:16px;"><div class="am-label">' + i[0] + ' side</div>' +
-          '<img src="' + esc(i[1]) + '" style="max-width:100%;border-radius:8px;border:1px solid #2a2a2a;" alt="' + i[0] + ' document"></div>';
-      }).join('') || '<p style="color:#9a9a9a;">No documents attached.</p>',
-      function () {});
-  }
-
+  /* Decide a submission. The profile row is updated alongside the queued
+     request so the applicant sees the same verdict on their settings page, and
+     both stores are written from the same read - re-reading inside save() would
+     throw the status change away. */
   function setKyc(id, status) {
+    var row = findKyc(id);
+    if (!row) { toast('Could not find that submission', 'bad'); return false; }
     var reqs = list('bb_kyc_requests');
-    var target = reqs.filter(function (x) { return x.id === id; })[0];
-    if (!target) return;
-    target.status = status;
-    save('bb_kyc_requests', reqs);
+    var target = reqs.filter(function (x) {
+      return (x.id || ('KYC-' + shortId(x.uid || x.userId || '') + '-' + (x.time || 0))) === id;
+    })[0];
+    if (target) {
+      target.status = status;
+      target.decidedAt = Date.now();
+      target.decidedBy = A.get(A.KEYS.uid, '');
+      save('bb_kyc_requests', reqs);
+    }
     var map = users();
-    if (map[target.uid]) {
-      map[target.uid].kyc_status = status;
-      map[target.uid].kyc = status;
-      if (status === 'verified') map[target.uid].kyc_verified = true;
+    if (row.uid && map[row.uid]) {
+      map[row.uid].kyc_status = status;
+      map[row.uid].kyc = status;
+      if (status === 'approved') map[row.uid].kyc_verified = true;
+      else delete map[row.uid].kyc_verified;
       A.writeJSON(A.KEYS.users, map);
     }
     render(); buildNav();
     toast('KYC ' + status, status === 'approved' ? 'ok' : 'bad');
-  }
-
-
-  function findDeposit(id) {
-    return list('bb_deposit_requests').filter(function (r) {
-      return 'DEP-' + shortId(r.uid || r.userId || '') + '-' + (r.time || Date.now()) === id;
-    })[0];
+    return true;
   }
 
   /* ===================================================== approval actions
@@ -1515,13 +1799,7 @@
     var key = 'bb_' + kind + '_requests';
     var arr = list(key);
     var rec = null;
-    arr.forEach(function (r) {
-      var uid = r.uid || r.userId || '';
-      var rid = kind === 'withdrawal' ? 'WD-' + shortId(uid) + '-' + (r.time || Date.now())
-        : kind === 'deposit' ? 'DEP-' + shortId(uid) + '-' + (r.time || Date.now())
-        : 'LOAN-' + (r.time || Date.now());
-      if (rid === id) rec = r;
-    });
+    arr.forEach(function (r) { if (requestId(kind, r) === id) rec = r; });
     if (!rec) return null;
     fn(rec);
     save(key, arr);
@@ -1701,13 +1979,16 @@
         }
         else if (act === 'loan-del') {
           save('bb_borrow_requests', list('bb_borrow_requests').filter(function (r) {
-            return 'LOAN-' + (r.time || Date.now()) !== b.dataset.id;
+            return requestId('borrow', r) !== b.dataset.id;
           }));
           render(); buildNav();
           toast('Loan removed', 'bad');
         }
-        else if (act === 'kyc-docs') kycDocs(b.dataset.id);
+        else if (act === 'kyc-review') kycReview(b.dataset.id);
         else if (act === 'dep-proof') showDepositProof(b.dataset.id);
+        else if (act === 'loan-proof') showLoanProof(b.dataset.id);
+        else if (act === 'wd-view') showWithdrawal(b.dataset.id);
+        else if (act === 'wd-copy') copyText(b.dataset.addr);
         else if (act === 'kyc-approve') setKyc(b.dataset.id, 'approved');
         else if (act === 'kyc-reject') setKyc(b.dataset.id, 'rejected');
       });

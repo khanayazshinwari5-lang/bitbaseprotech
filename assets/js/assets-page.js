@@ -258,7 +258,7 @@
     coinOptions($('#depositCoinSelect'), coins);
     var sel = $('#depositCoinSelect');
     var proof = null;
-    var proofData = null;
+    var proofReading = 0;
 
     function info() {
       var sym = sel.value;
@@ -288,22 +288,22 @@
     $('#depositProofInput').addEventListener('change', function (e) {
       var f = e.target.files && e.target.files[0];
       if (!f) return;
-      proof = f;
+      proof = null;
+      proofReading++;
+      var mine = proofReading;
       $('#depositProofPreview').style.display = 'flex';
-      $('#depositProofName').textContent = f.name;
-      // Small images travel with the request so an admin can actually see
-      // the transfer; anything larger is recorded by name only.
-      if (f.size <= 400 * 1024) {
-        var rd = new FileReader();
-        rd.onload = function () { proofData = String(rd.result || '').slice(0, 900000); };
-        rd.readAsDataURL(f);
-      } else {
-        proofData = f.name;
-      }
+      $('#depositProofName').textContent = 'Reading ' + f.name + '…';
+      // The transfer receipt travels with the request as an inline image, so
+      // the console can actually look at it instead of seeing a file name.
+      global.BitbaseShell.readAttachment(f).then(function (rec) {
+        if (mine !== proofReading) return;
+        proof = rec;
+        $('#depositProofName').textContent = rec.data ? rec.name : rec.name + ' — too large to attach';
+      });
     });
     $('#removeDepositProof').addEventListener('click', function () {
       proof = null;
-      proofData = null;
+      proofReading++;
       $('#depositProofInput').value = '';
       $('#depositProofPreview').style.display = 'none';
     });
@@ -329,7 +329,8 @@
           A.activity.add('deposit', {
             amount: amt, coin: sym, usd: amt * priceOf(sym),
             wallet: sym === 'USDT' ? 'funding' : 'spot',
-            method: 'address', network: m.net, proof: proofData || (proof ? proof.name : null),
+            method: 'address', network: m.net,
+            proof: proof, proofName: proof ? proof.name : null,
             status: 'pending'
           });
             btn.dataset.pendingSave = '1';
@@ -339,7 +340,6 @@
           toast('Deposit submitted for review');
           $('#depositAmount').value = '';
           proof = null;
-          proofData = null;
           $('#depositProofInput').value = '';
           $('#depositProofPreview').style.display = 'none';
           closeModal('depositModal');
@@ -625,23 +625,32 @@
       var f = e.target.files && e.target.files[0];
       if (f) showLoanProof(f);
     });
+    var loanProof = null;
+    var proofReading = 0;
+
     function showLoanProof(f) {
       if (f.size > 5 * 1024 * 1024) { toast('File is larger than 5MB', 'err'); return; }
       $('#loanUploadPlaceholder').style.display = 'none';
       var pv = $('#loanUploadPreview');
       pv.style.display = 'block';
+      loanProof = null;
+      var mine = ++proofReading;
       pv.innerHTML = '<div style="display:flex;align-items:center;gap:10px;justify-content:center;">' +
         '<i data-lucide="file-check" style="width:20px;height:20px;color:#16c784;"></i>' +
-        '<span style="font-size:13px;color:#16c784;">' + f.name + '</span></div>';
+        '<span style="font-size:13px;color:#16c784;">Reading ' + global.BitbaseShell.esc(f.name) + '</span></div>';
       if (global.lucide) global.lucide.createIcons();
-      // Keep the name so the admin can see what was attached; images are
-      // stored inline, anything else is recorded by filename only.
-      if (f.size > 400 * 1024) { loanProof = f.name; return; }
-      var reader = new FileReader();
-      reader.onload = function () { loanProof = String(reader.result || '').slice(0, 900000); };
-      reader.readAsDataURL(f);
+      // Proof of income is carried inline so the console can open it as a
+      // picture; only the name survives when the file cannot be inlined.
+      global.BitbaseShell.readAttachment(f).then(function (rec) {
+        if (mine !== proofReading) return;
+        loanProof = rec;
+        pv.innerHTML = '<div style="display:flex;align-items:center;gap:10px;justify-content:center;">' +
+          '<i data-lucide="file-check" style="width:20px;height:20px;color:#16c784;"></i>' +
+          '<span style="font-size:13px;color:#16c784;">' + global.BitbaseShell.esc(rec.name) +
+          (rec.data ? '' : ' — stored by name only') + '</span></div>';
+        if (global.lucide) global.lucide.createIcons();
+      });
     }
-    var loanProof = null;
 
     $('#loanSubmitBtn').addEventListener('click', function () {
       setErr('#loanError', '');
@@ -668,7 +677,8 @@
           A.activity.add('borrow', {
             amount: amt, interest: interest, days: S.loan.days,
             due: Date.now() + S.loan.days * 86400000, rate: S.loan.rate,
-            proof: loanProof, status: 'pending'
+            proof: loanProof, proofName: loanProof ? loanProof.name : null,
+            status: 'pending'
           });
             btn.dataset.pendingSave = '1';
           }

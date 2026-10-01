@@ -310,10 +310,36 @@
     if (rec.kyc_dob) $('#kycDOB').value = rec.kyc_dob;
     if (rec.kyc_country) $('#kycNationality').value = rec.kyc_country;
     if (rec.kyc_address) $('#kycAddress').value = rec.kyc_address;
+    if (rec.kyc_city) $('#kycCity').value = rec.kyc_city;
+    if (rec.kyc_postal) $('#kycPostal').value = rec.kyc_postal;
+    if (rec.kyc_doc_type) $('#kycDocType').value = rec.kyc_doc_type;
+    ['Front', 'Back'].forEach(function (side) {
+      var doc = (A.readJSON('kyc_doc_' + side, {}) || {})[side];
+      if (!doc) return;
+      $('#kyc' + side + 'Placeholder').style.display = 'none';
+      $('#kyc' + side + 'Preview').style.display = 'block';
+      $('#kyc' + side + 'Name').textContent = doc.name || 'Attached';
+    });
+    hush('#kycError'); hush('#kycDocError');
     kycStep(1);
     var m = $('#kycModal');
     m.classList.add('open');
     m.style.display = 'flex';
+  }
+
+  /* Every answer from step 1, read back from the form so the submission can
+     carry the whole identity rather than the three fields the profile column
+     happens to keep. */
+  function kycAnswers() {
+    return {
+      firstName: $('#kycFirstName').value.trim(),
+      lastName: $('#kycLastName').value.trim(),
+      dob: $('#kycDOB').value,
+      nationality: $('#kycNationality').value,
+      address: $('#kycAddress').value.trim(),
+      city: $('#kycCity').value.trim(),
+      postal: $('#kycPostal').value.trim()
+    };
   }
 
   function initKyc() {
@@ -329,17 +355,17 @@
     });
 
     $('#kycNextBtn').addEventListener('click', function () {
-      var first = $('#kycFirstName').value.trim();
-      var last = $('#kycLastName').value.trim();
-      var dob = $('#kycDOB').value;
-      var nat = $('#kycNationality').value;
-      var addr = $('#kycAddress').value.trim();
-      if (!first || !last || !dob || !nat || !addr) {
+      var a = kycAnswers();
+      if (!a.firstName || !a.lastName || !a.dob || !a.nationality || !a.address || !a.city || !a.postal) {
         say('Fill in every field before continuing', '#kycError');
         return;
       }
       hush('#kycError');
-      patchRecord({ kyc_first: first, kyc_last: last, kyc_dob: dob, kyc_country: nat, kyc_address: addr });
+      patchRecord({
+        kyc_first: a.firstName, kyc_last: a.lastName, kyc_dob: a.dob,
+        kyc_country: a.nationality, kyc_address: a.address,
+        kyc_city: a.city, kyc_postal: a.postal
+      });
       kycStep(2);
     });
 
@@ -348,51 +374,93 @@
     function uploader(side) {
       var area = $('#kycUpload' + side);
       var input = $('#kyc' + side + 'Input');
+      var reading = 0;
       area.addEventListener('click', function () { input.click(); });
       input.addEventListener('change', function (e) {
         var f = e.target.files && e.target.files[0];
         if (!f) return;
-        if (f.size > 10 * 1024 * 1024) { return; }
+        if (f.size > 10 * 1024 * 1024) { say('That file is larger than 10MB', '#kycDocError'); return; }
         var key = 'kyc_doc_' + side;
-        var docs = A.readJSON(key, {}) || {};
-        docs[side] = { name: f.name, size: f.size, at: Date.now() };
-        A.writeJSON(key, docs);
+        var mine = ++reading;
+        var clearing = A.readJSON(key, {}) || {};
+        clearing[side] = null;
+        A.writeJSON(key, clearing);
         $('#kyc' + side + 'Placeholder').style.display = 'none';
         $('#kyc' + side + 'Preview').style.display = 'block';
-        $('#kyc' + side + 'Name').textContent = f.name;
+        $('#kyc' + side + 'Name').textContent = 'Reading ' + f.name + '…';
         if (global.lucide) global.lucide.createIcons();
+        // The scan itself travels with the submission. Keeping only its name is
+        // what left a reviewer with nothing to look at.
+        global.BitbaseShell.readAttachment(f).then(function (doc) {
+          // A later pick on the same side wins, so a slow read cannot overwrite
+          // the file the user chose after it.
+          if (mine !== reading) return;
+          var latest = A.readJSON(key, {}) || {};
+          latest[side] = doc;
+          A.writeJSON(key, latest);
+          $('#kyc' + side + 'Name').textContent = doc.data
+            ? doc.name : doc.name + ' — too large to attach';
+        });
       });
     }
     uploader('Front');
     uploader('Back');
 
     $('#kycSubmitBtn').addEventListener('click', async function () {
-      var docs = A.readJSON('kyc_doc_Front', {}) || {};
-      if (!docs.Front) { return; }
-      var rec = A.readJSON(A.KEYS.users, {})[A.get(A.KEYS.uid, '')] || {};
+      hush('#kycDocError');
+      var front = (A.readJSON('kyc_doc_Front', {}) || {}).Front;
+      var back = (A.readJSON('kyc_doc_Back', {}) || {}).Back;
+      if (!front) { say('Attach the front of your document before submitting', '#kycDocError'); return; }
+
+      var btn = $('#kycSubmitBtn');
+      var a = kycAnswers();
+      if (!a.firstName || !a.lastName || !a.dob || !a.nationality || !a.address || !a.city || !a.postal) {
+        say('Fill in every field before continuing', '#kycDocError');
+        kycStep(1);
+        say('Fill in every field before continuing', '#kycError');
+        return;
+      }
+      btn.disabled = true;
       var submitted = Date.now();
+      var uid = A.get(A.KEYS.uid, '');
+      var rec = A.readJSON(A.KEYS.users, {})[uid] || {};
+      var docType = $('#kycDocType').value;
       patchRecord({
-        kyc_status: 'pending',
-        kyc_doc_type: $('#kycDocType').value,
-        kyc_submitted: submitted
+        kyc_first: a.firstName, kyc_last: a.lastName, kyc_dob: a.dob,
+        kyc_country: a.nationality, kyc_address: a.address,
+        kyc_city: a.city, kyc_postal: a.postal,
+        kyc_status: 'pending', kyc_doc_type: docType, kyc_submitted: submitted
       });
       A.set(A.KEYS.kyc, 'pending');
-      // Queue a request so the admin console can review and decide on it.
+      /* The profile only stores the columns the schema maps, so everything a
+         reviewer needs travels inside the queued request itself - the answers,
+         the contact details and both scans. */
       var reqs = A.readJSON('bb_kyc_requests', []) || [];
       reqs.unshift({
-        id: 'KYC-' + A.get(A.KEYS.uid, '') + '-' + submitted,
-        uid: A.get(A.KEYS.uid, ''),
-        name: (rec.kyc_first || '') + ' ' + (rec.kyc_last || ''),
-        email: rec.email || '',
-        nationality: rec.kyc_country || rec.country || '',
-        docType: $('#kycDocType').value,
-        docs: { front: docs.Front, back: docs.Back || null },
+        id: 'KYC-' + uid + '-' + submitted,
+        uid: uid, userId: uid,
+        name: rec.name || '',
+        legalName: (a.firstName + ' ' + a.lastName).trim(),
+        firstName: a.firstName, lastName: a.lastName, dob: a.dob,
+        email: rec.email || '', phone: rec.phone || '',
+        country: rec.country || '',
+        nationality: a.nationality,
+        address: a.address, city: a.city, postal: a.postal,
+        docType: docType,
+        docs: { front: front, back: back || null },
         status: 'pending',
+        submittedAt: submitted,
         time: submitted
       });
       A.writeJSON('bb_kyc_requests', reqs.slice(0, 400));
-      try { await A.flush(); kycStep(3); renderKyc(); }
-      catch (e) { if (global.BitbaseDB) global.BitbaseDB.warn(e); }
+      try {
+        await A.flush();
+        kycStep(3); renderKyc();
+      } catch (e) {
+        if (global.BitbaseDB) global.BitbaseDB.warn(e);
+      } finally {
+        btn.disabled = false;
+      }
     });
     $('#kycFinishBtn').addEventListener('click', function () {
       var m = $('#kycModal');
