@@ -311,7 +311,9 @@
     setInterval(updateFreshness, 1000);
     updateFreshness();
   }
-
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
-  else boot();
+// Nothing renders until the database mirror is filled, so the first
+  // paint is already the user's own data rather than a blank frame.
+  if (document.readyState === 'loading')
+    document.addEventListener('DOMContentLoaded', function () { A.whenReady(boot); });
+  else A.whenReady(boot);
 })(window);

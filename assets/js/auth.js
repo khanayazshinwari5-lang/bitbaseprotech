@@ -1,13 +1,19 @@
 /* ==========================================================================
-   Bitbase – client-side account store
-   There is no backend on this replica, so accounts live in localStorage under
-   the same bb_* keys the original site uses. Passwords are salted + SHA-256
-   hashed when crypto.subtle is available (localhost / https), otherwise the
-   record falls back to a clearly-prefixed plaintext value. This is browser
-   storage only and is not a substitute for real server-side auth.
+   Bitbase – accounts, roles and the storage seam
+
+   Reads and writes go through get/set/readJSON/writeJSON, which every page
+   uses. With Supabase configured those are served from an in-memory mirror that
+   was filled from Postgres at boot, and every write is queued straight back to
+   the database - so the pages below are unchanged by the move off localStorage,
+   but nothing is browser-only any more.
+
+   Without Supabase (or when the network is down) the same four functions fall
+   through to localStorage, so the site still runs standalone.
    ========================================================================== */
 (function (global) {
   'use strict';
+
+  var BB = global.BitbaseDB || null;
 
   var K = {
     users: 'bb_accounts',        // { uid -> { uid, name, email, pass, salt, country, created } }
@@ -28,25 +34,16 @@
   var COINS = ['BTC', 'ETH', 'SOL', 'BNB', 'ADA', 'DOGE', 'XRP', 'DOT', 'LTC', 'LINK', 'AVAX', 'TRX', 'USDT'];
 
   /* --------------------------------------------------------------- storage
-     localStorage is the only store this build has, and browsers refuse it in
-     plenty of ordinary situations: site data blocked for the origin, a privacy
-     extension, an InPrivate or Guest profile, a partitioned preview frame.
-     Reading the property throws a SecurityError in all of those.
-
-     So the store is probed rather than assumed. When the real one is refused we
-     fall back to a plain in-memory map: accounts, balances, ledgers and the
-     session all keep working for as long as the tab is open, they just do not
-     survive a reload. window.localStorage is shadowed with the same shim so the
-     pages that read it directly do not throw either. */
+     localStorage is the offline fallback only now. localStorage is also
+     refused in plenty of ordinary situations - blocked site data, an InPrivate
+     profile, a partitioned preview frame - so it is probed, and a plain
+     in-memory map takes over when it is not there. */
   var memoryStore = (function () {
     var mem = {};
     var names = function () { return Object.keys(mem); };
     return {
       _bbFallback: true,
-      getItem: function (k) {
-        var v = mem[k];
-        return v === undefined ? null : v;
-      },
+      getItem: function (k) { var v = mem[k]; return v === undefined ? null : v; },
       setItem: function (k, v) { mem[k] = String(v); },
       removeItem: function (k) { delete mem[k]; },
       clear: function () { mem = {}; },
@@ -66,8 +63,7 @@
     } catch (e) {
       persistent = false;
       // Shadow the real API so the pages that read it directly (the theme
-      // preference read in <head>) stop throwing too. localStorage may be
-      // unforgeable in some browsers, in which case this is simply skipped.
+      // preference read in <head>) stop throwing too.
       try { global.localStorage = memoryStore; } catch (e2) {}
       try {
         Object.defineProperty(global, 'localStorage',
@@ -77,11 +73,19 @@
     }
   }
 
-  /* True when accounts really are saved to disk between visits. False means
-     the app is running on the in-memory fallback. */
-  function storagePersistent() { ls(); return persistent; }
+  /* True when accounts really are saved to Postgres between visits. */
+  function storagePersistent() {
+    if (BB && BB.isOn()) return true;
+    ls();
+    return persistent;
+  }
 
+  function remote() { return !!(BB && BB.client()); }
+
+  /* The mirror wins whenever it has the key: it is what came from the
+     database, so it is the freshest copy we have. */
   function get(key, fallback) {
+    if (BB && BB.mirror[key] !== undefined && BB.mirror[key] !== null) return BB.mirror[key];
     var s = ls();
     if (!s) return fallback;
     try {
@@ -91,12 +95,17 @@
   }
 
   function set(key, val) {
+    if (BB) {
+      BB.mirror[key] = val;
+      if (BB.isOn()) { BB.persist(key); return true; }
+    }
     var s = ls();
     if (!s) return false;
     try { s.setItem(key, String(val)); return true; } catch (e) { return false; }
   }
 
   function del(key) {
+    if (BB) delete BB.mirror[key];
     var s = ls();
     if (!s) return;
     try { s.removeItem(key); } catch (e) {}
@@ -109,6 +118,13 @@
 
   function writeJSON(key, val) {
     try { return set(key, JSON.stringify(val)); } catch (e) { return false; }
+  }
+
+  /* Pages wait on this before their first render, so the mirror is populated. */
+  function whenReady(fn) {
+    if (!BB || !BB.ready) { fn(); return Promise.resolve(); }
+    return BB.ready.then(function () { return BB.loadAccounts(); })
+      .then(function () { fn(); }, function () { fn(); });
   }
 
   /* ------------------------------------------------------------ passwords */
@@ -147,9 +163,57 @@
   }
 
   /* --------------------------------------------------------------- store */
-  function allUsers() { return readJSON(K.users, {}) || {}; }
+  function allUsers() {
+    if (BB && BB.mirror[K.users]) return BB.mirror[K.users];
+    return readJSON(K.users, {}) || {};
+  }
 
-  function saveUsers(map) { return writeJSON(K.users, map); }
+  /* Writing the account map means writing profile rows. Anything that is not
+     mapped onto a column is dropped rather than smuggled into a column it does
+     not belong in. */
+  var PROFILE_COLUMNS = {
+    name: 'name', email: 'email', country: 'country', cash: 'cash',
+    funding: 'funding', assets: 'assets', kyc_status: 'kyc_status',
+    phone: 'phone', phone_verified: 'phone_verified', profitMode: 'profit_mode',
+    disabled: 'disabled', admin: 'admin', owner: 'is_owner', perms: 'perms'
+  };
+
+  function accountPatch(rec) {
+    var patch = {};
+    Object.keys(PROFILE_COLUMNS).forEach(function (from) {
+      if (rec[from] === undefined) return;
+      patch[PROFILE_COLUMNS[from]] = rec[from];
+    });
+    return patch;
+  }
+
+  /* Every page and the console both funnel through here. With a database the
+     change is pushed row by row - only the rows that actually differ - and the
+     schema decides what the caller may write. */
+  function saveUsers(map) {
+    if (BB && BB.isOn()) {
+      var prev = BB.mirror[K.users + ':snapshot'] || {};
+      BB.mirror[K.users] = map;
+      var changed = [];
+      Object.keys(map).forEach(function (id) {
+        var rec = map[id];
+        if (!rec) return;
+        var before = prev[id];
+        if (before && JSON.stringify(before) === JSON.stringify(rec)) return;
+        changed.push(id);
+      });
+      var snap = {};
+      Object.keys(map).forEach(function (id) {
+        if (map[id]) snap[id] = JSON.parse(JSON.stringify(map[id]));
+      });
+      BB.mirror[K.users + ':snapshot'] = snap;
+      changed.forEach(function (id) {
+        BB.saveProfileFor(id, accountPatch(map[id])).catch(function () {});
+      });
+      return true;
+    }
+    return writeJSON(K.users, map);
+  }
 
   /* Six digit numeric id, the format the platform shows in the admin console.
      Random rather than sequential so ids are not guessable from each other,
@@ -186,19 +250,50 @@
     return null;
   }
 
-  /* ------------------------------------------------------------- register */
+  /* ------------------------------------------------------------- register
+     With a database the account is created by Supabase Auth and the profile
+     row is made by the signup trigger, so nothing here hashes a password any
+     more. The local path below is kept for the no-database case. */
   function register(data) {
     var name = String(data.name || '').trim();
-    var email = normaliseEmail(data.email);
+    var email = normaliseEmail(email0(data.email));
     var pass = String(data.password || '');
 
     if (!name) return Promise.reject({ field: 'nameError', message: 'Please enter your full name' });
     if (!EMAIL_RE.test(email)) return Promise.reject({ field: 'emailError', message: 'Please enter a valid email address' });
     if (!pass || pass.length < 8) return Promise.reject({ field: 'passError', message: 'Password must be at least 8 characters' });
+
+    if (remote()) {
+      var c = BB.client();
+      return c.auth.signUp({
+        email: email,
+        password: pass,
+        options: { data: { name: name, country: data.country || 'other' } }
+      }).then(function (res) {
+        if (res.error) {
+          if (/already|registered|exists/i.test(res.error.message)) {
+            return Promise.reject({ field: 'emailError', message: 'An account with this email already exists. Please sign in.' });
+          }
+          return Promise.reject({ field: 'submitError', message: res.error.message });
+        }
+        if (!res.data || !res.data.session) {
+          // Only happens when "Confirm email" is on in Supabase settings.
+          return Promise.reject({ field: 'submitError', message: 'Check your inbox to confirm this email, then sign in.' });
+        }
+        return BB.refreshSession().then(function () {
+          return BB.loadAccounts();
+        }).then(function () {
+          var me = allUsers()[BB.uid()] || null;
+          if (!me) return Promise.reject({ field: 'submitError', message: 'Your account was created but could not be loaded. Try signing in.' });
+          startSession(me.uid, me, undefined, true);
+          return me;
+        });
+      });
+    }
+
     if (findByEmail(email)) {
       return Promise.reject({ field: 'emailError', message: 'An account with this email already exists. Please sign in.' });
     }
-
     var salt = randomSalt();
     return hashPassword(pass, salt).then(function (hashed) {
       var map = allUsers();
@@ -216,12 +311,36 @@
       return map[uid];
     });
   }
+  function email0(v) { return String(v || ''); }
 
   /* ---------------------------------------------------------------- login */
   function login(email, password, remember) {
     var e = normaliseEmail(email);
     if (!EMAIL_RE.test(e)) return Promise.reject({ field: 'emailError', message: 'Please enter a valid email address' });
     if (!password) return Promise.reject({ field: 'passError', message: 'Password is required' });
+
+    if (remote()) {
+      return BB.client().auth.signInWithPassword({ email: e, password: password })
+        .then(function (res) {
+          if (res.error || !res.data || !res.data.user) {
+            return Promise.reject({ field: 'loginError', message: 'Incorrect email or password. Please try again.' });
+          }
+          return BB.refreshSession().then(function () { return BB.loadAccounts(); })
+            .then(function () {
+              var me = allUsers()[BB.uid()] || null;
+              if (!me) return Promise.reject({ field: 'loginError', message: 'That account has no profile record. Please contact support.' });
+              if (me.disabled === true) {
+                return Promise.reject({ field: 'loginError', message: 'This account has been deactivated. Please contact support.' });
+              }
+              startSession(me.uid, me, remember);
+              return me;
+            });
+        })
+        .catch(function (e) {
+          if (e && e.field) return Promise.reject(e);
+          return Promise.reject({ field: 'loginError', message: 'Could not reach the sign-in service. Check your connection and try again.' });
+        });
+    }
 
     var user = findByEmail(e);
     if (!user) {
@@ -239,8 +358,20 @@
     });
   }
 
+  /* With Supabase, password reset is the built-in recovery email flow; the
+     browser cannot set somebody else's password. */
   function resetPassword(email, newPassword) {
-    var user = findByEmail(email);
+    var e = normaliseEmail(email);
+    if (remote()) {
+      if (!EMAIL_RE.test(e)) return Promise.reject({ message: 'Enter a valid email address' });
+      return BB.client().auth.resetPasswordForEmail(e, {
+        redirectTo: global.location.origin + '/login.html'
+      }).then(function (res) {
+        if (res.error) return Promise.reject({ message: res.error.message });
+        return true;
+      });
+    }
+    var user = findByEmail(e);
     if (!user) return Promise.reject({ message: 'No account found with that email' });
     if (!newPassword || newPassword.length < 8) {
       return Promise.reject({ message: 'Password must be at least 8 characters' });
@@ -255,8 +386,19 @@
     });
   }
 
-  /* Authenticated change: the current password must verify first. */
+  /* Authenticated change: the current password must verify first. Supabase
+     re-checks the current password itself, so the browser never sees either one. */
   function changePassword(email, currentPassword, newPassword) {
+    if (remote()) {
+      if (!currentPassword) return Promise.reject({ message: 'Enter your current password' });
+      if (!newPassword || newPassword.length < 8) return Promise.reject({ message: 'New password must be at least 8 characters' });
+      if (newPassword === currentPassword) return Promise.reject({ message: 'Choose a password different from the current one' });
+      return BB.client().auth.updateUser({ password: newPassword })
+        .then(function (res) {
+          if (res.error) return Promise.reject({ message: res.error.message });
+          return true;
+        });
+    }
     var user = findByEmail(email);
     if (!user) return Promise.reject({ message: 'No account found' });
     if (!currentPassword) return Promise.reject({ message: 'Enter your current password' });
@@ -336,6 +478,11 @@
       if (global.sessionStorage) global.sessionStorage.removeItem(K.session);
     } catch (e) {}
     del(K.session);
+    if (remote()) {
+      BB.client().auth.signOut().catch(function () {});
+      // Drop the whole mirror so the next visitor sees nothing of this user.
+      if (BB.mirror) Object.keys(BB.mirror).forEach(function (k) { delete BB.mirror[k]; });
+    }
   }
 
   /* ------------------------------------------------------------ portfolio */
@@ -357,9 +504,10 @@
   }
 
   /* ---------------------------------------------------------------- admin
-     There is no server, so an "admin" is simply an account record carrying
-     admin:true. Anyone can set it by hand in devtools; in a real deployment
-     this flag would come from the backend and never from the client. */
+     With a database the admin flag is a column on the profile row, so it can no
+     longer be typed into devtools: the schema's trigger only lets an admin
+     change it. These functions stay synchronous for the console's sake - they
+     update the mirror and queue the write, and the database has the last word. */
   function isAdmin() {
     var rec = currentRecord();
     return !!(rec && rec.admin === true);
@@ -446,7 +594,9 @@
       delete map[uid].admin;
       delete map[uid].perms;
     }
-    return saveUsers(map);
+    var saved = saveUsers(map);
+    if (saved && BB && BB.isOn()) BB.audit('admin.access', uid, { on: !!on });
+    return saved;
   }
 
   function setAdmin(uid, on) { return setAdminAs(uid, on, false); }
@@ -479,6 +629,7 @@
         delete m[uid].owner;
       }
       if (!saveUsers(m)) return Promise.reject({ message: 'Could not save the account store' });
+      if (BB && BB.isOn()) BB.audit('admin.owner', uid, { owner: !!on });
       return true;
     });
   }
@@ -542,10 +693,27 @@
     });
   }
 
-  /* The password is what lets a non-admin into the console. */
+  /* The password is what lets a non-admin into the console. With a database the
+     promotion itself is a profile column that only an admin may write, so the
+     password confirms the console's shared secret and the database has the last
+     word on whether the change is allowed. Without a database this is still the
+     path that mints the very first admin. */
   function unlockAsAdmin(pw) {
     return checkAdminPassword(pw).then(function () {
-      setAdminAs(get(K.uid, ''), true, true);
+      var me = get(K.uid, '');
+      if (!me) return Promise.reject({ message: 'Sign in first' });
+      if (BB && BB.isOn()) {
+        return BB.saveProfileFor(me, { admin: true }).then(function (res) {
+          if (!res || res.error) return Promise.reject({ message: 'Only the first admin can grant access now' });
+          var map = allUsers();
+          if (map[me]) map[me].admin = true;
+          saveUsers(map);
+          return true;
+        }).catch(function (e) {
+          return Promise.reject({ message: (e && e.message) || 'Only the first admin can grant access now' });
+        });
+      }
+      setAdminAs(me, true, true);
       return true;
     });
   }
@@ -618,6 +786,8 @@
 
   /* Remove an account and everything it owns. Refuses on the owner, and on the
      last admin, so the console can never be locked out with no way back in.
+     With a database the profile row goes first and every table cascades from
+     it - ledgers, threads and settings all disappear with the account.
      Always returns a promise so callers do not have to handle a bare boolean. */
   function deleteAccount(uid) {
     var map = allUsers();
@@ -626,6 +796,16 @@
     var admins = Object.keys(map).filter(function (k) { return map[k].admin === true; });
     if (map[uid].admin === true && admins.length <= 1) {
       return Promise.reject({ message: 'Cannot delete the last remaining admin' });
+    }
+    if (BB && BB.isOn()) {
+      return BB.deleteAccountFor(uid).then(function () {
+        BB.audit('account.delete', uid, { name: map[uid].name });
+        delete map[uid];
+        if (BB.mirror[K.users + ':snapshot']) delete BB.mirror[K.users + ':snapshot'][uid];
+        return true;
+      }).catch(function (e) {
+        return Promise.reject({ message: (e && e.message) || 'Could not delete that account' });
+      });
     }
     delete map[uid];
     if (!saveUsers(map)) return Promise.reject({ message: 'Could not save the account store' });
@@ -775,6 +955,10 @@
     funding: funding, setFunding: setFunding,
     assets: assets, setAssetQty: setAssetQty,
     activity: activity,
+    whenReady: whenReady,
+    isRemote: remote,
+    dbStatus: function () { return BB ? BB.status() : 'local'; },
+    dbError: function () { return BB ? BB.error() : null; },
     storageAvailable: function () { return !!ls(); },
     storagePersistent: storagePersistent
   };
