@@ -84,6 +84,18 @@
     return (u && u.name) || uid || '\u2014';
   }
 
+  /* The six digit user id in a column of its own. It is the only identifier an
+     operator can read back to a customer, and the request tables used to fold it
+     into the name - so a row whose account had been renamed, or whose profile
+     row was gone, showed nothing that identified anybody. */
+  function uidCell(uid) {
+    return '<td class="am-mono"><span class="am-id">' + esc(shortId(uid)) + '</span></td>';
+  }
+  /* The name, with the id as a fallback so the cell is never blank. */
+  function userCell(name, uid) {
+    return esc(String(name || '').trim() || shortId(uid));
+  }
+
   /* How a contract ended, in one place.
      The trade engine settles a position by writing `won` plus a status of
      'Won', 'Lost' or 'Closed'; older records carry `result` instead. An admin
@@ -649,8 +661,13 @@
   }
   function attachName(v) {
     if (v == null) return '';
-    if (typeof v === 'string') return v;
-    return v.name || v.fileName || '';
+    var n = typeof v === 'string' ? v : (v.name || v.fileName || '');
+    n = String(n);
+    /* Never let the bytes stand in for a file name. A value that is not a name
+       was printed into the cell in full, which put a whole base64 picture on
+       screen as a wall of monospace text with no way to open it. */
+    if (!n || /^data:/i.test(n) || n.length > 200) return '';
+    return n;
   }
   function isImageSrc(s) { return /^data:image\//i.test(String(s || '')); }
 
@@ -658,7 +675,7 @@
      ordinary pages do not have to download every picture anybody ever uploaded
      (see BitbaseDB). Fetch this one, on demand, when it is about to be shown. */
   function attachReady(value, field) {
-    var ref = value && typeof value === 'object' ? value.ref : '';
+    var ref = attachRef(value);
     if (!ref || !field || !global.BitbaseDB) return Promise.resolve(value);
     return Promise.resolve(global.BitbaseDB.attachment(ref)).then(function (bag) {
       var v = bag && bag[field];
@@ -669,20 +686,49 @@
     }).catch(function () { return value; });
   }
 
+  /* A KYC submission stores its scans together, as { front, back }. Moving the
+     bytes out of the request row moves that whole object, and leaves the request
+     holding a reference to the container rather than to each side. Reading only
+     docs.front therefore found nothing on every submission made since the split,
+     and the review panel said no scan had been attached. The container is opened
+     here instead, and the two sides handed back in the same order. */
+  function kycDocs(docs, front, back) {
+    var ref = attachRef(docs);
+    if (front || back || !ref || !global.BitbaseDB) return Promise.resolve([front, back]);
+    return Promise.resolve(global.BitbaseDB.attachment(ref)).then(function (bag) {
+      var d = bag && bag.docs;
+      if (!d || typeof d !== 'object') return [front, back];
+      return [d.front || null, d.back || null];
+    }).catch(function () { return [front, back]; });
+  }
+
+  function attachRef(v) {
+    return v && typeof v === 'object' && typeof v.ref === 'string' && v.ref.indexOf('bb_doc_') === 0 ? v.ref : '';
+  }
+
   /* One table cell: a thumbnail where the file is a picture, then a button
      that opens the whole thing. A file that could not be inlined says so by
-     name instead of pretending there is nothing attached. */
+     name instead of pretending there is nothing attached - and it still gets a
+     button, because a reference is exactly the case where the bytes are stored
+     apart and have to be fetched. Showing only the name there left the console
+     with no way to open any newly uploaded proof at all. */
   function attachCell(value, act, id, label) {
     var src = attachSrc(value);
     var name = attachName(value);
+    var ref = attachRef(value);
+    var button = '<button class="am-btn info" data-act="' + esc(act) + '" data-id="' + esc(id) + '">' +
+      esc(label || 'View') + '</button>';
     if (!src) {
-      return name ? '<span class="am-file" title="' + esc(name) + '">' + esc(name) + '</span>' : '\u2014';
+      var label2 = name || (ref ? 'attachment' : '');
+      if (!label2) return '\u2014';
+      return '<div class="am-attach">' +
+        '<span class="am-file" title="' + esc(label2) + '">' + esc(label2) + '</span>' +
+        (ref ? button : '') + '</div>';
     }
     var thumb = isImageSrc(src)
       ? '<img class="am-thumb" src="' + esc(src) + '" alt="' + esc(name || 'attachment') + '">'
       : '<span class="am-thumb doc">PDF</span>';
-    return '<div class="am-attach">' + thumb +
-      '<button class="am-btn info" data-act="' + esc(act) + '" data-id="' + esc(id) + '">' + esc(label || 'View') + '</button></div>';
+    return '<div class="am-attach">' + thumb + button + '</div>';
   }
 
   /* Open an attachment on its own. Images fill the wide box, a PDF gets a
@@ -761,7 +807,8 @@
       var tone = r.status === 'approved' ? 'green' : r.status === 'rejected' ? 'red' : 'orange';
       return '<tr>' +
         '<td><span class="am-id">' + esc(r.id) + '</span></td>' +
-        '<td>' + esc(r.name) + ' (' + esc(shortId(r.uid)) + ')</td>' +
+        '<td>' + userCell(r.name, r.uid) + '</td>' +
+        uidCell(r.uid) +
         '<td class="am-mono">' + esc(r.coin) + '</td>' +
         '<td class="am-num-orange">' + qty(r.amount, 4) + '</td>' +
         '<td class="am-mono">' + qty(r.fee, 4) + '</td>' +
@@ -780,7 +827,7 @@
     });
     return filterRow([['all', 'All'], ['pending', 'Pending'], ['approved', 'Approved'], ['rejected', 'Rejected']],
       wdFilter, 'data-wfilter') +
-      table(['ID', 'User', 'Coin', 'Amount', 'Fee', 'Network', 'Address', 'Status', 'Time', 'Actions'],
+      table(['ID', 'User', 'UID', 'Coin', 'Amount', 'Fee', 'Network', 'Address', 'Status', 'Time', 'Actions'],
         rows, 'No withdrawal requests recorded.');
   }
   function withdrawalAction(r) {
@@ -835,7 +882,8 @@
         : overdue ? ['Overdue', 'red'] : ['Active', 'green'];
       return '<tr>' +
         '<td><span class="am-id">' + esc(r.id) + '</span></td>' +
-        '<td>' + esc(r.name) + ' (' + esc(shortId(r.uid)) + ')</td>' +
+        '<td>' + userCell(r.name, r.uid) + '</td>' +
+        uidCell(r.uid) +
         '<td class="am-num-purple">' + money(r.amount) + '</td>' +
         '<td>' + (r.days >= 360 ? (r.days / 365).toFixed(1).replace(/\.0$/, '') + ' Year' : r.days + ' Days') + '</td>' +
         '<td class="am-mono">' + (r.rate * 100).toFixed(1) + '%</td>' +
@@ -851,7 +899,7 @@
         filterRow([['all', 'All'], ['pending', 'Pending'], ['active', 'Active'], ['paid', 'Paid'], ['rejected', 'Rejected']],
           loanFilter, 'data-lfilter').replace('class="am-filters"', 'class="am-filters" style="margin:0"') +
       '</div>' +
-      table(['ID', 'User', 'Borrow', 'Duration', 'Rate', 'Interest', 'Total Owed', 'Proof', 'Status', 'Time', 'Actions'],
+      table(['ID', 'User', 'UID', 'Borrow', 'Duration', 'Rate', 'Interest', 'Total Owed', 'Proof', 'Status', 'Time', 'Actions'],
         rows, 'No loan requests recorded.');
   }
   function loanAction(r) {
@@ -875,6 +923,15 @@
      review panel and the approve/reject buttons all read the same row, and the
      answer the user typed on the KYC form is carried on the request itself
      rather than left on a profile column nobody syncs. */
+  /* The one id a KYC submission is known by everywhere: the table, the review
+     panel and the decision buttons. The stored id is a row UUID, which is
+     unreadable in a list and says nothing about whose submission it is, so it is
+     derived from the six digit user id and the submission time instead. The
+     stored value stays available as rowId. */
+  function kycDisplayId(r) {
+    return 'KYC-' + shortId((r && (r.uid || r.userId)) || '') + '-' + ((r && r.time) || 0);
+  }
+
   function kycRows() {
     var acc = accounts();
     var byUid = {};
@@ -891,8 +948,10 @@
         legal = parts.filter(Boolean).join(' ').trim();
       }
       var docs = r.docs && typeof r.docs === 'object' ? r.docs : {};
+      var inline = (docs.front ? 1 : 0) + (docs.back ? 1 : 0);
       return {
-        id: r.id || ('KYC-' + shortId(uid) + '-' + (r.time || 0)),
+        id: kycDisplayId(r),
+        rowId: r.id || '',
         uid: uid,
         code: shortId(uid),
         account: r.name || a.name || '',
@@ -909,9 +968,12 @@
         postal: r.postal || r.postalCode || r.zip || rec.kyc_postal || '',
         docType: r.docType || rec.kyc_doc_type || 'Passport',
         docs: docs,
+        /* A reference on the container means the scans exist and are simply held
+           apart, which still counts as an upload worth reviewing. */
+        docsRef: attachRef(docs),
         front: docs.front || null,
         back: docs.back || null,
-        docCount: (docs.front ? 1 : 0) + (docs.back ? 1 : 0),
+        docCount: inline || (attachRef(docs) ? 1 : 0),
         status: r.status || 'pending',
         time: r.time || 0,
         decidedAt: r.decidedAt || 0
@@ -947,7 +1009,8 @@
         : r.status === 'rejected' ? ['Rejected', 'red'] : ['Pending', 'orange'];
       return '<tr>' +
         '<td><span class="am-id">' + esc(r.id) + '</span></td>' +
-        '<td>' + esc(r.account || 'User') + ' (' + esc(shortId(r.uid)) + ')</td>' +
+        '<td>' + userCell(r.account, r.uid) + '</td>' +
+        uidCell(r.uid) +
         '<td>' + esc(r.legalName || '\u2014') + '</td>' +
         '<td>' + esc(r.email || '\u2014') + '</td>' +
         '<td>' + esc(r.docType) + '</td>' +
@@ -961,7 +1024,7 @@
     });
     return filterRow([['all', 'All'], ['pending', 'Pending'], ['approved', 'Approved'], ['rejected', 'Rejected']],
       kycFilter, 'data-kfilter') +
-      table(['ID', 'User', 'Legal Name', 'Email', 'Doc Type', 'Submission', 'Status', 'Submitted', 'Actions'],
+      table(['ID', 'User', 'UID', 'Legal Name', 'Email', 'Doc Type', 'Submission', 'Status', 'Submitted', 'Actions'],
         rows, 'No KYC submissions yet.');
   }
   function kycAction(r) {
@@ -997,11 +1060,6 @@
     var r = findKyc(id);
     if (!r) { toast('Could not find that submission', 'bad'); return; }
     var front = r.front, back = r.back;
-    /* Only wait when a side is genuinely stored apart. A side that is already
-       inline, or simply absent, has nothing to fetch. */
-    var pending = [front, back].filter(function (v) {
-      return !attachSrc(v) && v && typeof v === 'object' && typeof v.ref === 'string';
-    });
     var answers =
       '<div class="am-kv">' +
         kycField('Account name', r.account) +
@@ -1024,9 +1082,17 @@
         kycDocBlock('Back of document', b) +
         '<div style="display:flex;gap:10px;margin-top:22px;">' + kycAction(r) + '</div>';
     }
-    if (!pending.length) { modal(kycTitle(r), panel(front, back), kycMount(id), true); return; }
+    /* Nothing is fetched when both sides are already inline, or when the
+       submission genuinely has none. */
+    var inline = !!attachSrc(front) || !!attachSrc(back);
+    if (inline || (!r.docsRef && !attachRef(front) && !attachRef(back))) {
+      modal(kycTitle(r), panel(front, back), kycMount(id), true);
+      return;
+    }
     modal(kycTitle(r), answers + '<p style="color:#8a8a8a;font-size:13px;">Fetching the documents\u2026</p>', function () {}, true);
-    Promise.all([attachReady(front, 'front'), attachReady(back, 'back')]).then(function (both) {
+    kycDocs(r.docs, front, back).then(function (both) {
+      return Promise.all([attachReady(both[0], 'front'), attachReady(both[1], 'back')]);
+    }).then(function (both) {
       modal(kycTitle(r), panel(both[0], both[1]), kycMount(id), true);
     }).catch(function () {
       modal(kycTitle(r), panel(front, back), kycMount(id), true);
@@ -1138,7 +1204,8 @@
       var tone = r.status === 'approved' ? 'green' : r.status === 'rejected' ? 'red' : 'orange';
       return '<tr>' +
         '<td><span class="am-id">' + esc(r.id) + '</span></td>' +
-        '<td>' + esc(r.name) + ' (' + esc(shortId(r.uid)) + ')</td>' +
+        '<td>' + userCell(r.name, r.uid) + '</td>' +
+        uidCell(r.uid) +
         '<td class="am-mono">' + esc(r.coin) + '</td>' +
         '<td class="am-mono">' + qty(r.amount, 6) + '</td>' +
         '<td class="am-num-green">\u2248 ' + money(r.usd) + '</td>' +
@@ -1187,8 +1254,8 @@
     '<h2 class="am-h2" style="margin-top:34px;">Deposit Requests</h2>' +
     filterRow([['all', 'All'], ['pending', 'Pending'], ['approved', 'Approved'], ['rejected', 'Rejected']],
       depFilter, 'data-depfilter') +
-    table(['ID', 'User', 'Coin', 'Amount', 'Value', 'Network', 'Proof', 'Status', 'Time', 'Actions'],
-      depRows, 'No deposit requests recorded.');
+      table(['ID', 'User', 'UID', 'Coin', 'Amount', 'Value', 'Network', 'Proof', 'Status', 'Time', 'Actions'],
+        depRows, 'No deposit requests recorded.');
   }
 
   function depositAction(r) {
@@ -1759,7 +1826,15 @@
   function confirmDeleteUser(uid) {
     var a = accounts().filter(function (x) { return x.uid === uid; })[0];
     var withDb = A.isRemote();
-    modal('Delete account', a ? a.name : uid,
+    var who = a ? a.name : 'this account';
+    modal('Delete account', who,
+      /* The name alone in the title is not enough to be sure which row is
+         meant, and the tables put a name and an id in separate columns. Both
+         are repeated here, with the six digit id, before anything is removed. */
+      '<div class="am-kv" style="margin-bottom:18px;">' +
+        kycField('Account', who) +
+        kycField('User ID', shortId(uid), true) +
+      '</div>' +
       '<p style="font-size:13.5px;line-height:1.65;color:#9a9a9a;">This permanently removes ' +
       (withDb
         ? 'the sign-in, the profile, and every balance, holding, contract, ledger, chat and setting ' +
@@ -1775,8 +1850,10 @@
       '<button class="am-btn no" id="dYes" style="flex:1;">Delete permanently</button></div>' +
       '<div id="dErr"></div>',
       function () {
-        $('#dNo').addEventListener('click', closeModal);
+        var no = $('#dNo');
+        if (no) no.addEventListener('click', closeModal);
         var yes = $('#dYes');
+        if (!yes) { closeModal(); return; }
         yes.addEventListener('click', function () {
           // Held until the round trip finishes, so a second click cannot send a
           // second delete and land on a row that no longer exists.
@@ -1789,7 +1866,7 @@
                sign in and be rebuilt, which is not what Delete means. */
             if (out && out.signinRemoved === false) {
               toast('Profile removed, but the sign-in still works', 'bad');
-              modal('Sign-in still active', esc(a ? a.name : uid),
+              modal('Sign-in still active', who,
                 '<p style="font-size:13.5px;line-height:1.65;color:#9a9a9a;">The profile and all of its ' +
                 'records are gone, but this account can still sign in, and signing in rebuilds it.</p>' +
                 '<p style="font-size:13.5px;line-height:1.65;color:#9a9a9a;">Run ' +
@@ -1798,7 +1875,10 @@
                 'account again from here.</p>' +
                 '<div style="display:flex;gap:8px;margin-top:20px;">' +
                 '<button class="am-btn primary" id="dOk" style="flex:1;">Close</button></div>',
-                function () { $('#dOk').addEventListener('click', closeModal); });
+                function () {
+                  var ok = $('#dOk');
+                  if (ok) ok.addEventListener('click', closeModal);
+                });
               return;
             }
             toast('Account deleted', 'bad');
@@ -1877,8 +1957,10 @@
     var row = findKyc(id);
     if (!row) { toast('Could not find that submission', 'bad'); return false; }
     var reqs = list('bb_kyc_requests');
+    // Matched on the same derived id the table shows, never on the stored row
+    // UUID, so a decision always lands on the row that was clicked.
     var target = reqs.filter(function (x) {
-      return (x.id || ('KYC-' + shortId(x.uid || x.userId || '') + '-' + (x.time || 0))) === id;
+      return kycDisplayId(x) === id;
     })[0];
     if (target) {
       target.status = status;

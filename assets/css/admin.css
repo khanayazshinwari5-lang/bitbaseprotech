@@ -413,8 +413,9 @@ body {
 
 /* ------------------------------------------------------- attachments */
 /* A table cell that holds an attached picture: a thumbnail to recognise it by
-   and a button that opens it full size. */
-.am-attach { display: flex; align-items: center; gap: 9px; }
+   and a button that opens it full size. Wraps rather than forcing the column
+   wider, so a long file name puts the button underneath it. */
+.am-attach { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; min-width: 0; }
 .am-thumb {
   width: 36px; height: 36px; flex: 0 0 36px; border-radius: 8px; object-fit: cover;
   border: 1px solid #2a2a2a; background: #111; display: block; cursor: zoom-in;
@@ -425,7 +426,7 @@ body {
   cursor: default;
 }
 .am-file {
-  display: inline-block; max-width: 190px; font-size: 11px; color: #7a7a7a;
+  display: inline-block; max-width: 190px; min-width: 0; font-size: 11px; color: #7a7a7a;
   font-family: 'IBM Plex Mono', monospace; word-break: break-all; line-height: 1.5;
 }
 

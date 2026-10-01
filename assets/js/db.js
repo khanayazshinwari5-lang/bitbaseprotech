@@ -53,6 +53,12 @@
     bb_demo_trades_hist: { table: 'user_settings', key: 'demo_trades_hist' },
     bb_demo_trade_id_counter: { table: 'user_settings', key: 'demo_trade_id_counter' },
     bb_trade_id_counter: { table: 'user_settings', key: 'trade_id_counter' },
+    // The KYC form parks each scan under its own key while it is being filled
+    // in. With no mapping here the mirror never held them: a write went to
+    // memory only, a reload dropped them, and a freshly loaded page could not
+    // submit because the document the user had attached read back as missing.
+    kyc_doc_Front: { table: 'user_settings', key: 'kyc_doc_Front' },
+    kyc_doc_Back: { table: 'user_settings', key: 'kyc_doc_Back' },
     bb_deposit_addresses: { table: 'app_settings', key: 'deposit_addresses', admin: true },
     bb_admin_password: { table: 'app_settings', key: 'admin_password', admin: true },
     bb_cash_balance: { profile: 'cash' },
