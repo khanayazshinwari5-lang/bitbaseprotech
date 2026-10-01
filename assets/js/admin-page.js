@@ -1168,6 +1168,9 @@
         '</span></div></div>';
     }
     $('#amView').innerHTML = role + html;
+    // On a phone an open conversation owns the whole screen height, so the CSS
+    // can make the message list the only thing that scrolls.
+    document.body.classList.toggle('am-conv-open', current === 'support' && !!supportOpen);
     if (global.lucide) global.lucide.createIcons();
     wire();
   }

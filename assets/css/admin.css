@@ -478,8 +478,31 @@ body {
   .am-conv-panel:not(.open) .am-thread { display: none; }
   .am-conv-panel.open .am-conv-list { display: none; }
   .am-back { display: inline-flex; }
-  .am-msgs { max-height: none; }
   .am-reply { padding: 12px 14px; flex-wrap: wrap; }
   .am-reply .am-input { flex: 1 1 100%; }
   .am-thread-head { flex-wrap: wrap; }
+
+  /* An open conversation fills the screen: the page itself stops scrolling, the
+     thread's own header and the composer take their natural height, and the
+     messages take everything left over and scroll inside it. That way the reply
+     box is always the last thing on screen instead of a scroll away. */
+  body.am-conv-open { overflow: hidden; }
+  body.am-conv-open .am { height: 100vh; height: 100dvh; min-height: 0; }
+  body.am-conv-open .am-main {
+    display: flex; flex-direction: column; min-height: 0; padding-bottom: 12px;
+  }
+  body.am-conv-open .am-head { display: none; }
+  body.am-conv-open .am-filters { flex: 0 0 auto; margin-bottom: 10px; }
+  body.am-conv-open #amView {
+    display: flex; flex-direction: column; flex: 1; min-height: 0;
+  }
+  body.am-conv-open .am-rolebar { flex: 0 0 auto; margin-bottom: 10px; }
+  body.am-conv-open .am-conv-panel {
+    display: flex; flex-direction: column; flex: 1; min-height: 0;
+  }
+  body.am-conv-open .am-conv { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  body.am-conv-open .am-thread { flex: 1; min-height: 0; }
+  body.am-conv-open .am-thread-head { flex: 0 0 auto; }
+  body.am-conv-open .am-msgs { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
+  body.am-conv-open .am-reply { flex: 0 0 auto; }
 }
