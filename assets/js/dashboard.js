@@ -51,7 +51,8 @@
     price: {},
     chg: {},
     series: null,       // { points:[{t,v}], source, cashOnly }
-    chartTimer: null
+    chartTimer: null,
+    chartDrawn: 0       // when the curve was last rebuilt, to rate limit redraws
   };
 
   /* ------------------------------------------------------------ helpers - */
@@ -227,16 +228,97 @@
     return out;
   }
 
+  /* Every dated record that moved the cash balance, oldest first.
+     There is no server-side balance history to ask for, so the past is
+     reconstructed by walking these backwards from the live balance. Only settled
+     movements count: a deposit that was never approved, or a contract still
+     running, did not change what the account owned. */
+  function balanceEvents() {
+    var uid = A.get(A.KEYS.uid, '');
+    var out = [];
+    function mine(r) {
+      if (!r) return false;
+      if (!r.uid && !r.userId) return true;                 // a record with no owner is this account's
+      return String(r.uid || r.userId) === String(uid);
+    }
+    function at(r) { return num(r.settledAt || r.time || r.created || r.decidedAt); }
+
+    (A.readJSON('bb_trades_history', []) || []).forEach(function (t) {
+      if (!mine(t) || t.status === 'Active' || t.status === 'Review') return;
+      /* The server settles against a recorded exit price, so net is the figure
+         to use. Older local records carry only a status, and the payout rules
+         are the same ones the console's P/L column reads. */
+      var v = (t.net !== undefined && t.net !== null && isFinite(t.net)) ? num(t.net)
+        : t.status === 'Won' ? num(t.profit)
+        : t.status === 'Lost' ? -num(t.profit)
+        : t.status === 'Closed' ? (num(t.refund) ? num(t.refund) - num(t.amt) : -num(t.amt) * 0.5)
+        : 0;                                              // Draw and Cancelled net nothing
+      if (v) out.push({ t: at(t), v: v });
+    });
+    (A.readJSON('bb_deposit_requests', []) || []).forEach(function (d) {
+      if (mine(d) && d.status === 'approved') out.push({ t: at(d), v: Math.abs(num(d.amount)) });
+    });
+    (A.readJSON('bb_withdrawal_requests', []) || []).forEach(function (w) {
+      if (mine(w) && w.status === 'approved') out.push({ t: at(w), v: -Math.abs(num(w.amount)) });
+    });
+    return out.filter(function (e) { return e.t > 0; }).sort(function (a, b) { return a.t - b.t; });
+  }
+
+  /* How far back each tab actually reaches. */
+  var PERIOD_MS = {
+    '24H': 24 * 3600e3,
+    '7D': 7 * 24 * 3600e3,
+    '1M': 30 * 24 * 3600e3,
+    '3M': 90 * 24 * 3600e3,
+    '1Y': 365 * 24 * 3600e3,
+    'ALL': 5 * 365 * 24 * 3600e3
+  };
+
+  /* The cash balance as it stood at each step across the chosen window. The
+     balance is walked backwards from the live figure through the recorded
+     movements, then forwards again, so the first point is the balance at the
+     start of the window and the last one is the balance now. */
+  function cashHistory(period, cash, note) {
+    var p = PERIODS[period];
+    var n = Math.max(2, p.limit || 30);
+    var span = PERIOD_MS[period] || PERIOD_MS['1M'];
+    var now = Date.now(), from = now - span;
+    var events = balanceEvents().filter(function (e) { return e.t > from; });
+
+    var start = cash;
+    events.forEach(function (e) { start -= e.v; });
+
+    var points = [], step = span / (n - 1), i = 0, running = start;
+    for (var k = 0; k < n; k++) {
+      var t = from + step * k;
+      while (i < events.length && events[i].t <= t) { running += events[i].v; i++; }
+      points.push({ t: t, v: running });
+    }
+    // The last point is the live figure, so the line always agrees with the tile.
+    points[points.length - 1].v = cash;
+
+    var source = events.length
+      ? 'your balance history (' + events.length + ' recorded ' +
+        (events.length === 1 ? 'movement' : 'movements') + ')'
+      : 'no recorded movements in this period';
+    return {
+      points: points, source: source, cashOnly: true, events: events.length,
+      note: (note ? note + ' ' : '') + (events.length
+        ? 'Built from ' + source + ' over ' + p.label + '.'
+        : 'Nothing in the ledger changed the balance over ' + p.label + ', so the line stays at your current balance. It moves as soon as a trade settles or a transfer is approved.')
+    };
+  }
+
   function buildSeries(period) {
     var p = PERIODS[period];
     var cash = A.cash();
     var held = COINS.filter(function (c) { return c.symbol !== 'USDT' && qtyOf(c.symbol) > 0; });
 
-    if (!held.length) {
-      var n = 30, flat = [], now = Date.now();
-      for (var i = 0; i < n; i++) flat.push({ t: now - (n - i) * 60000, v: cash });
-      return Promise.resolve({ points: flat, source: 'Cash only', cashOnly: true });
-    }
+    /* Nothing to re-price against the market, so the line follows the cash
+       balance over the window the tab actually names. It used to be thirty
+       identical points a minute apart whatever the tab said, which is why the
+       curve never moved and 24H/7D/1M/3M/1Y/ALL all drew the same flat line. */
+    if (!held.length) return Promise.resolve(cashHistory(period, cash, 'No crypto positions yet.'));
 
     return Promise.all(held.map(function (c) {
       return F.loadCandles(c.symbol, p.iv).then(function (r) {
@@ -244,10 +326,11 @@
       }).catch(function () { return null; });
     })).then(function (all) {
       var series = all.filter(function (s) { return s && s.candles && s.candles.length > 1; });
+      /* Holdings exist but no historical closes came back. The cash part of the
+         portfolio is still real and dated, so show that and say the holdings
+         are missing rather than drawing a flat line across the whole value. */
       if (!series.length) {
-        var pts = [], t0 = Date.now();
-        for (var j = 0; j < 20; j++) pts.push({ t: t0 - (20 - j) * 60000, v: cash });
-        return { points: pts, source: 'Unavailable', cashOnly: true };
+        return cashHistory(period, cash, 'Historical prices for your holdings are unavailable right now, so only the cash balance is plotted.');
       }
 
       var times = series[0].candles.map(function (k) { return k.time; });
@@ -280,8 +363,7 @@
     // will not hide them.
     if (loader) { loader.classList.add('hidden'); loader.style.display = 'none'; }
 
-    var total = totalValue();
-    if (!series || !series.points || series.points.length < 2 || total <= 0) {
+    if (!series || !series.points || series.points.length < 2) {
       svg.innerHTML = '';
       if (empty) {
         empty.classList.remove('hidden');
@@ -289,14 +371,19 @@
       }
       var vb = $('#chartValueBox'); if (vb) vb.classList.add('hidden');
       var ch = $('#chartChange'); if (ch) ch.textContent = '';
-      var src = $('#chartSource');
-      if (src) src.textContent = 'Deposit funds to start tracking your portfolio over time.';
+      var none = $('#chartSource');
+      if (none) none.textContent = 'Deposit funds to start tracking your portfolio over time.';
       return;
     }
     if (empty) { empty.classList.add('hidden'); empty.style.display = 'none'; }
     var vbox = $('#chartValueBox'); if (vbox) vbox.classList.remove('hidden');
 
     var pts = series.points.map(function (p) { return p.v; });
+    /* The headline has to describe the line that is actually drawn. The tile
+       above reports the whole portfolio including a stake held in an open
+       contract, which the cash line deliberately excludes, so reading the total
+       here made the number and the curve disagree whenever a trade was open. */
+    var total = pts[pts.length - 1];
     var w = 800, h = 300, pad = 20;
     var min = Math.min.apply(null, pts);
     var max = Math.max.apply(null, pts);
@@ -313,7 +400,6 @@
     var linePath = 'M' + coords.map(function (c) { return c.x + ',' + c.y; }).join(' L');
     var areaPath = linePath + ' L' + coords[coords.length - 1].x + ',' + h + ' L' + coords[0].x + ',' + h + ' Z';
     var last = coords[coords.length - 1];
-    var up = total >= pts[0];
 
     svg.innerHTML =
       '<defs>' +
@@ -346,17 +432,19 @@
 
     var src = $('#chartSource');
     if (src) {
-      src.textContent = series.cashOnly
-        ? 'No crypto positions yet — the line tracks your cash balance over ' + PERIODS[state.period].label + '.'
-        : 'Valued over ' + PERIODS[state.period].label + ' using ' + series.source +
-          ' historical closes for your ' + cryptoQty() + ' current holding' + (cryptoQty() === 1 ? '' : 's') + '.';
+      src.textContent = series.note
+        ? series.note
+        : (series.cashOnly
+          ? 'No crypto positions yet — the line tracks your cash balance over ' + PERIODS[state.period].label + '.'
+          : 'Valued over ' + PERIODS[state.period].label + ' using ' + series.source +
+            ' historical closes for your ' + cryptoQty() + ' current holding' + (cryptoQty() === 1 ? '' : 's') + '.');
     }
-    void up;
   }
 
   function loadChart(showLoader) {
     var loader = $('#chartLoader');
-    if (loader) { loader.classList.remove('hidden'); loader.style.display = 'flex'; }
+    if (loader && showLoader) { loader.classList.remove('hidden'); loader.style.display = 'flex'; }
+    state.chartDrawn = Date.now();
     return buildSeries(state.period).then(function (series) {
       state.series = series;
       renderChart(series);
@@ -537,11 +625,23 @@
       renderStats();
     });
 
-    // Re-price the pinned final point on a slow cadence.
+    /* Re-price the pinned final point on a slow cadence, and redraw at once when
+       something actually changed. The cash line is a local reconstruction, so
+       it can be rebuilt without a network round trip; when holdings exist the
+       rebuild needs historical candles, so that one stays on the slow timer.
+       bitbase:data fires on every realtime change, so it is rate limited. */
     state.chartTimer = setInterval(function () { loadChart(false); }, 30000);
+
+    function redrawChart() {
+      var held = COINS.some(function (c) { return c.symbol !== 'USDT' && qtyOf(c.symbol) > 0; });
+      if (held) return;
+      if (state.chartDrawn && Date.now() - state.chartDrawn < 5000) return;
+      loadChart(false);
+    }
 
     global.addEventListener('bitbase:data', function () {
       loadQuantities(); patchHoldings(); renderStats(); renderRecentActivity(); paintIdentity();
+      redrawChart();
     });
 
     // Another tab changing the balance should be reflected here.
@@ -560,6 +660,8 @@
       loadQuantities();
       patchHoldings();
       renderStats();
+      // A tab left open overnight was showing yesterday's curve.
+      loadChart(false);
     });
   }
 // Nothing renders until the database mirror is filled, so the first

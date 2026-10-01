@@ -69,6 +69,29 @@
 .pair-opt:hover { background: rgba(255,255,255,0.06); }
 .pair-opt.selected { background: rgba(247,147,26,0.1); color: var(--taccent); }
 
+/* The pair list carries every class the feed knows about, not just the ones the
+   settlement service can decide, so a pair that cannot take real money is
+   labelled rather than silently absent. Still selectable: the chart, the live
+   price and the practice book all work for it. */
+.pair-group {
+  padding: 10px 10px 5px; font-size: 10px; font-weight: 600; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--t3); opacity: .8;
+}
+.pair-group:not(:first-child) { border-top: 1px solid var(--tborder2); margin-top: 5px; }
+.pair-opt .pair-tag {
+  margin-left: auto; font-size: 9.5px; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--t3); opacity: .8;
+}
+.pair-opt .pair-tag.demo { color: var(--f7931a); opacity: 1; }
+.pair-opt.blocked { opacity: .62; }
+.pair-opt.blocked .pair-opt-name, .pair-opt.blocked { color: var(--t2); }
+
+/* Held while a pair cannot be settled: the note beside it says why. */
+.trade-btns .btn-up:disabled,
+.trade-btns .btn-down:disabled {
+  opacity: .35; cursor: not-allowed; filter: grayscale(.6);
+}
+
 .trading-layout { display: grid; grid-template-columns: 1fr 300px; overflow: hidden; }
 .trading-main { display: flex; flex-direction: column; min-width: 0; height: 100%; overflow: hidden; }
 

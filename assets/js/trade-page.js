@@ -25,9 +25,45 @@
 
 
 
-  var PAIRS = (F.instruments || F.coins.map(function (c) { return { sym: c.sym, name: c.name }; })).map(function (i) {
-    return { sym: i.sym, name: i.name, group: i.group, venue: i.venue, label: F.pairLabel ? F.pairLabel(i.sym) : i.sym + '/USDT' };
-  }).filter(function(p){return !REMOTE || p.group==='crypto';});
+  /* ------------------------------------------------------------ the pairs
+     Every instrument the feed knows about stays in the list, on both pages.
+     A real contract is settled by PostgreSQL from the exact one-second candle at
+     expiry, fetched with every browser closed, so the pair has to exist on a
+     venue that serves that history. Binance USDT does. The spot gold feed,
+     Kraken and the futures scanner do not: they publish a current price, not a
+     past second, so a contract on one of them could only ever be decided against
+     an invented number.
+
+     Dropping them from the list made the whole product look smaller than it is
+     and gave no way to find out why. They are listed and labelled instead, and
+     the buy/sell buttons are disabled for them with the reason on screen.
+
+     SETTLED has to agree with the allowlist in supabase/INSTALL.sql. Adding a
+     symbol there and here is what makes a new pair tradable with real money. */
+  var SETTLED = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'DOGE', 'AVAX', 'LINK', 'TRX', 'DOT', 'LTC'];
+  var GROUP_ORDER = ['crypto', 'metals', 'forex', 'commodities'];
+  var GROUP_LABEL = { crypto: 'Crypto', metals: 'Metals', forex: 'Forex', commodities: 'Commodities' };
+  var VENUE_NAME = { binance: 'Binance USDT', kraken: 'Kraken', tv: 'TradingView futures', spot: 'the spot gold feed' };
+
+  var PAIRS = (F.instruments || F.coins.map(function (c) { return { sym: c.sym, name: c.name, group: 'crypto' }; }))
+    .map(function (i) {
+      return {
+        sym: i.sym, name: i.name, group: i.group || 'crypto', venue: i.venue || 'binance',
+        label: F.pairLabel ? F.pairLabel(i.sym) : i.sym + '/USDT'
+      };
+    })
+    .sort(function (a, b) {
+      var g = GROUP_ORDER.indexOf(a.group) - GROUP_ORDER.indexOf(b.group);
+      return g || a.label.localeCompare(b.label);
+    });
+
+  /* Real money only where the settlement worker can decide the outcome. */
+  function canSettle(p) { return !REMOTE || SETTLED.indexOf(p.sym) !== -1; }
+  function blockedReason(p) {
+    return VENUE_NAME[p.venue] === 'Binance USDT'
+      ? 'Automatic settlement is not configured for this pair yet.'
+      : VENUE_NAME[p.venue] + ' publishes a live price but not the one-second history a settled contract needs.';
+  }
 
   var TF = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
   var TF_LABEL = { '1m': '1m', '5m': '5m', '15m': '15m', '1h': '1H', '4h': '4H', '1d': '1D', '1w': '1W' };
@@ -197,10 +233,22 @@
   function buildPairDD() {
     var dd = $('#pairDD');
     if (!dd) return;
-    dd.innerHTML = PAIRS.map(function (p, i) {
-      var tag = p.group && p.group !== 'crypto' ? ' <span style="opacity:.55;font-size:10px;text-transform:uppercase;letter-spacing:.04em;">' + p.group + '</span>' : '';
-      return '<div class="pair-opt' + (i === S.idx ? ' selected' : '') + '" data-i="' + i + '">' + p.label + tag + '</div>';
-    }).join('');
+    var out = [], group = null;
+    PAIRS.forEach(function (p, i) {
+      if (p.group !== group) {
+        group = p.group;
+        out.push('<div class="pair-group">' + (GROUP_LABEL[group] || group) + '</div>');
+      }
+      /* A pair the worker cannot settle is still listed, marked, so the reason
+         is discoverable from the list rather than only after a failed order. */
+      var tag = p.group !== 'crypto'
+        ? '<span class="pair-tag">' + (GROUP_LABEL[p.group] || p.group) + '</span>'
+        : '';
+      if (!canSettle(p)) tag += '<span class="pair-tag demo">demo only</span>';
+      out.push('<div class="pair-opt' + (i === S.idx ? ' selected' : '') + (canSettle(p) ? '' : ' blocked') +
+        '" data-i="' + i + '">' + p.label + tag + '</div>');
+    });
+    dd.innerHTML = out.join('');
     $$('.pair-opt', dd).forEach(function (el) {
       el.addEventListener('click', function () {
         selectPair(parseInt(el.dataset.i, 10));
@@ -216,6 +264,28 @@
     loadCandles();
     buildPairDD();
     updateSummary();
+    applySettleGate();
+  }
+
+  /* Holds the order buttons for a pair the settlement worker cannot decide, and
+     says why on the page. Without a database every pair is settleable in the
+     browser, so the gate never appears on the Demo page or offline. */
+  function applySettleGate() {
+    var up = $('#btnUp'), down = $('#btnDown');
+    var note = $('#settleNote'), help = $('#settleHelp');
+    var p = PAIRS[S.idx];
+    var ok = !p || canSettle(p);
+    if (up) up.disabled = !ok;
+    if (down) down.disabled = !ok;
+    if (!note || !help) return;
+    if (ok) { note.style.display = 'none'; help.style.display = ''; return; }
+    note.style.display = '';
+    help.style.display = 'none';
+    note.innerHTML = '<strong>' + p.label + ' cannot be traded with real money yet.</strong> ' +
+      global.BitbaseShell.esc(blockedReason(p)) + ' Contracts are decided by the settlement service from the exact ' +
+      'one-second price at expiry, and that service can only read ' +
+      (VENUE_NAME[p.venue] === 'Binance USDT' ? 'the pairs configured for it' : 'Binance USDT history') + '. ' +
+      'You can chart it and trade it for practice on the <a href="demo.html" style="color:var(--f7931a);">Demo page</a>.';
   }
 
   function refreshQuote(sym) {
@@ -327,6 +397,14 @@
 
   async function placeTrade(dir) {
     if (submitting) return;
+    var pair = PAIRS[S.idx];
+    /* The buttons are already held, but the same check runs here so a keyboard
+       activation or a stale click cannot send an order the service will refuse
+       after the stake has been promised to the customer. */
+    if (pair && !canSettle(pair)) {
+      toast(pair.label + ': ' + blockedReason(pair) + ' Use the Demo page for this pair.', 'var(--red)');
+      return;
+    }
     var amt = getAmount();
     var bal = balance();
     if (amt <= 0) { toast('Please enter a valid amount', 'var(--red)'); return; }
@@ -615,6 +693,7 @@
 
     buildPicker();
     buildPairDD();
+    applySettleGate();
 
     var pairBtn = $('#pairBtn');
     var dd = $('#pairDD');
