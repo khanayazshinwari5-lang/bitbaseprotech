@@ -438,6 +438,48 @@
       }).then(ok);
   }
 
+  /* Belt and braces for the profile row. The schema has an AFTER INSERT trigger on
+     auth.users that creates it, which is the right place for it - but if that
+     trigger was never created, or an older account predates it, the user is
+     signed in with no profile and every page reads as empty. A user may insert
+     and edit only their own row, so this cannot touch anybody else, and the
+     role columns are left to the trigger and to the admin console. */
+  function randomCode() {
+    var n = Math.floor(Math.random() * 900000) + 100000;
+    return String(n);
+  }
+
+  function ensureProfile(meta) {
+    if (!isOn() || !session || !session.user) return Promise.resolve(null);
+    var user = session.user;
+    var metaIn = user.user_metadata || {};
+    var wanted = {
+      name: (meta && meta.name) || metaIn.name || '',
+      country: (meta && meta.country) || metaIn.country || 'other'
+    };
+    return client.from('profiles').select('*').eq('id', uid()).limit(1).maybeSingle()
+      .then(function (r) {
+        if (r && r.data) {
+          profile = r.data;
+          mirrorAccounts();
+          return profile;
+        }
+        // RLS allows this: a row with your own id, and no role columns set.
+        return ok(client.from('profiles').insert({
+          id: uid(), code: randomCode(),
+          email: user.email || '', name: wanted.name, country: wanted.country
+        }).select('*').single())
+          .then(function (made) {
+            if (made && made.data) { profile = made.data; mirrorAccounts(); }
+            return profile;
+          });
+      })
+      .catch(function (e) {
+        if (global.console && console.warn) console.warn('[bitbase-db] ensureProfile:', e && e.message);
+        return null;
+      });
+  }
+
   /* ------------------------------------------------------------- accounts */
   /* The profile row is the account. Admin edits go through here so RLS and the
      role guard in the schema decide what is allowed, not the browser. */
@@ -486,7 +528,7 @@
     if (!client) return Promise.resolve(null);
     return client.auth.getSession().then(function (res) {
       onSession(res);
-      return hydrate();
+      return ensureProfile().then(function () { return hydrate(); });
     });
   }
 
@@ -578,7 +620,8 @@
   }
 
   var ready = connect()
-    .then(function (res) { onSession(res); return hydrate(); })
+    .then(function (res) { onSession(res); return ensureProfile(); })
+    .then(function () { return hydrate(); })
     .then(function () {
       status = 'ready';
       return null;
@@ -617,6 +660,7 @@
     saveProfileFor: saveProfileFor,
     deleteAccountFor: deleteAccountFor,
     refreshSession: refreshSession,
+    ensureProfile: ensureProfile,
     audit: audit,
     toAccount: toAccount,
     /* Queue a key for the database. Debounced so a screen that saves five rows
