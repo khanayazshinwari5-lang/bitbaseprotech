@@ -192,7 +192,7 @@
         if (window.lucide) lucide.createIcons();
 
         // Already signed in? Go straight to the dashboard.
-        if (A && A.isAuthenticated()) { window.location.replace('dashboard.html'); return; }
+        if (A) A.whenReady(function () { if (A.isAuthenticated()) window.location.replace('dashboard.html'); });
 
         window.togglePassword = function (id, btn) {
             var input = $(id);
@@ -245,6 +245,7 @@
 
         $('loginForm').addEventListener('submit', function (e) {
             e.preventDefault();
+            if ($('submitBtn').disabled) return;
             hideError('emailError'); hideError('passError'); hideError('loginError');
 
             var email = $('email').value.trim();
@@ -264,7 +265,7 @@
                 setTimeout(function () { window.location.href = 'dashboard.html'; }, 900);
             }).catch(function (err) {
                 busy(false);
-                var field = err && err.field;
+                var field = (err && err.field) || 'loginError';
                 var msg = (err && err.message) || 'Something went wrong. Please try again.';
                 if (field === 'loginError') {
                     var box = $('loginError');

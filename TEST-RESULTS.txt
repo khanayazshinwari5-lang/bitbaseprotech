@@ -1,0 +1,31 @@
+✔ restores a v2 Supabase session and reads hydrated arrays/objects (16.548537ms)
+✔ signup waits for SDK boot, creates the server profile and preserves server balances on login (8.747788ms)
+✔ email confirmation is a successful pending signup without a fake session (2.014126ms)
+✔ invalid login and failed database boot do not create browser-only accounts (9.493815ms)
+✔ orphaned auth accounts repair only their own profile and expose database read failures (3.115237ms)
+✔ admin sees a newly registered user without manual refresh (69.1469ms)
+✔ all request kinds arrive in admin after flush; stale writers cannot delete unseen rows (140.97536ms)
+✔ chat reaches admin and admin reply reaches the correct customer without duplicate messages (204.654498ms)
+✔ lost message acknowledgement can be retried without duplicating a committed message (7.611005ms)
+✔ failed request stays queued and flush actually waits for and retries its save (6.466992ms)
+✔ admin account edits via writeJSON reach the correct profile; logout clears prior account data (10.218378ms)
+✔ pagination includes users beyond the first 1,000 records (98.746928ms)
+✔ customer cannot send an admin message (8.995987ms)
+✔ poll fallback refreshes admin data when realtime events are unavailable (4074.578343ms)
+✔ deactivated accounts cannot complete login (10.662566ms)
+✔ dashboard waits for session restoration before its access gate (6.526683ms)
+✔ assets-page waits for session restoration before its access gate (7.849845ms)
+✔ markets-page waits for session restoration before its access gate (9.594926ms)
+✔ history-page waits for session restoration before its access gate (4.449093ms)
+✔ settings-page waits for session restoration before its access gate (2.601826ms)
+✔ trade-page waits for session restoration before its access gate (5.183388ms)
+✔ login form shows invalid credentials, releases the spinner, then redirects after valid login (972.641561ms)
+✔ signup form shows confirmation success and stays on the signup page (41.863377ms)
+ℹ tests 23
+ℹ suites 0
+ℹ pass 23
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 4854.479247

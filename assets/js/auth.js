@@ -7,7 +7,7 @@
    the database - so the pages below are unchanged by the move off localStorage,
    but nothing is browser-only any more.
 
-   Without Supabase (or when the network is down) the same four functions fall
+   With Supabase explicitly disabled the same four functions fall
    through to localStorage, so the site still runs standalone.
    ========================================================================== */
 (function (global) {
@@ -80,12 +80,13 @@
     return persistent;
   }
 
-  function remote() { return !!(BB && BB.client()); }
+  function remote() { return !!(BB && BB.configured()); }
 
   /* The mirror wins whenever it has the key: it is what came from the
      database, so it is the freshest copy we have. */
   function get(key, fallback) {
     if (BB && BB.mirror[key] !== undefined && BB.mirror[key] !== null) return BB.mirror[key];
+    if (remote() && (/^bb_/.test(key) || /^kyc_/.test(key))) return fallback;
     var s = ls();
     if (!s) return fallback;
     try {
@@ -95,12 +96,16 @@
   }
 
   function set(key, val) {
-    if (BB) {
+    if (remote()) {
+      if (key === K.users) {
+        var records = typeof val === 'string' ? JSON.parse(val) : val;
+        return saveUsers(records);
+      }
       BB.mirror[key] = val;
-      if (BB.isOn()) { BB.persist(key); return true; }
+      if (BB.MAP[key]) BB.persist(key);
+      return true;
     }
     var s = ls();
-    if (!s) return false;
     try { s.setItem(key, String(val)); return true; } catch (e) { return false; }
   }
 
@@ -112,12 +117,15 @@
   }
 
   function readJSON(key, fallback) {
-    try { var v = get(key, null); return v ? JSON.parse(v) : fallback; }
-    catch (e) { return fallback; }
+    try {
+      var v = get(key, null);
+      if (v === null || v === undefined) return fallback;
+      return typeof v === 'string' ? JSON.parse(v) : JSON.parse(JSON.stringify(v));
+    } catch (e) { return fallback; }
   }
-
   function writeJSON(key, val) {
-    try { return set(key, JSON.stringify(val)); } catch (e) { return false; }
+    try { return set(key, remote() ? JSON.parse(JSON.stringify(val)) : JSON.stringify(val)); }
+    catch (e) { return false; }
   }
 
   /* Pages wait on this before their first render, so the mirror is populated. */
@@ -191,25 +199,9 @@
      change is pushed row by row - only the rows that actually differ - and the
      schema decides what the caller may write. */
   function saveUsers(map) {
-    if (BB && BB.isOn()) {
-      var prev = BB.mirror[K.users + ':snapshot'] || {};
+    if (remote()) {
       BB.mirror[K.users] = map;
-      var changed = [];
-      Object.keys(map).forEach(function (id) {
-        var rec = map[id];
-        if (!rec) return;
-        var before = prev[id];
-        if (before && JSON.stringify(before) === JSON.stringify(rec)) return;
-        changed.push(id);
-      });
-      var snap = {};
-      Object.keys(map).forEach(function (id) {
-        if (map[id]) snap[id] = JSON.parse(JSON.stringify(map[id]));
-      });
-      BB.mirror[K.users + ':snapshot'] = snap;
-      changed.forEach(function (id) {
-        BB.saveProfileFor(id, accountPatch(map[id])).catch(function () {});
-      });
+      BB.persist(K.users);
       return true;
     }
     return writeJSON(K.users, map);
@@ -254,7 +246,7 @@
      With a database the account is created by Supabase Auth and the profile
      row is made by the signup trigger, so nothing here hashes a password any
      more. The local path below is kept for the no-database case. */
-  function register(data) {
+  function registerNow(data) {
     var name = String(data.name || '').trim();
     var email = normaliseEmail(email0(data.email));
     var pass = String(data.password || '');
@@ -291,15 +283,9 @@
           return Promise.reject({ field: 'submitError', message: res.error.message });
         }
         if (res.data && res.data.session) return settle();
-        // No session means the project has "Confirm email" switched on. Try to
-        // sign in anyway - it succeeds the moment the address is confirmed, so
-        // this stays working without anybody visiting the dashboard.
-        return c.auth.signInWithPassword({ email: email, password: pass }).then(function (again) {
-          if (again.error || !again.data || !again.data.session) {
-            return Promise.reject({ field: 'submitError', message: 'Check your inbox to confirm this email address, then sign in.' });
-          }
-          return settle();
-        });
+        // Email confirmation is a successful pending signup, not a login failure.
+        return { confirmationRequired: true, email: email };
+
       });
     }
 
@@ -326,7 +312,7 @@
   function email0(v) { return String(v || ''); }
 
   /* ---------------------------------------------------------------- login */
-  function login(email, password, remember) {
+  function loginNow(email, password, remember) {
     var e = normaliseEmail(email);
     if (!EMAIL_RE.test(e)) return Promise.reject({ field: 'emailError', message: 'Please enter a valid email address' });
     if (!password) return Promise.reject({ field: 'passError', message: 'Password is required' });
@@ -335,7 +321,7 @@
       return BB.client().auth.signInWithPassword({ email: e, password: password })
         .then(function (res) {
           if (res.error || !res.data || !res.data.user) {
-            return Promise.reject({ field: 'loginError', message: 'Incorrect email or password. Please try again.' });
+            return Promise.reject({ field: 'loginError', message: res.error && /email.*confirm/i.test(res.error.message) ? 'Please confirm your email address before signing in.' : (res.error && res.error.status === 429 ? 'Too many attempts. Please wait and try again.' : 'Incorrect email or password. Please try again.') });
           }
           return BB.refreshSession().then(function () { return BB.loadAccounts(); })
             .then(function () {
@@ -350,7 +336,7 @@
         })
         .catch(function (e) {
           if (e && e.field) return Promise.reject(e);
-          return Promise.reject({ field: 'loginError', message: 'Could not reach the sign-in service. Check your connection and try again.' });
+          return Promise.reject({ field: 'loginError', message: (e && e.message) || 'Could not reach the sign-in service. Check your connection and try again.' });
         });
     }
 
@@ -369,6 +355,14 @@
       return user;
     });
   }
+
+  function authReady() {
+    return (BB ? BB.ready : Promise.resolve()).then(function () {
+      if (remote() && !BB.client()) throw new Error(BB.error() || 'The sign-in service is unavailable. Please reload.');
+    });
+  }
+  function register(data) { return authReady().then(function () { return registerNow(data); }); }
+  function login(email, password, remember) { return authReady().then(function () { return loginNow(email, password, remember); }); }
 
   /* With Supabase, password reset is the built-in recovery email flow; the
      browser cannot set somebody else's password. */
@@ -435,6 +429,8 @@
 
   /* -------------------------------------------------------------- session */
   function startSession(uid, user, remember, isNew) {
+    // Supabase owns the session. Login must not rewrite balances or KYC.
+    if (remote()) return;
     var s = ls();
     var forever = remember === true;
     try { if (s && s.removeItem) s.removeItem(K.session); } catch (e) {}
@@ -474,7 +470,7 @@
     return { uid: uid, name: get(K.name, 'User'), email: get(K.email, 'user@email.com') };
   }
 
-  function isAuthenticated() { return !!get(K.uid); }
+  function isAuthenticated() { return remote() ? !!(BB.isOn() && BB.profile() && !BB.profile().disabled) : !!get(K.uid); }
 
   function displayName() {
     var u = currentUser();
@@ -482,19 +478,14 @@
     return String(n).split(' ')[0] || 'User';
   }
 
-  function logout() {
-    // Balances stay on the account record; only the working session is dropped
-    // so the next user never inherits them.
-    [K.cash, K.assets, K.kyc, K.loginTime, K.registeredAt, K.name, K.email, K.pass, K.uid].forEach(del);
-    try {
-      if (global.sessionStorage) global.sessionStorage.removeItem(K.session);
-    } catch (e) {}
-    del(K.session);
+  async function logout() {
     if (remote()) {
-      BB.client().auth.signOut().catch(function () {});
-      // Drop the whole mirror so the next visitor sees nothing of this user.
-      if (BB.mirror) Object.keys(BB.mirror).forEach(function (k) { delete BB.mirror[k]; });
+      await BB.flush();
+      var result = await BB.client().auth.signOut();
+      if (result.error) throw result.error;
     }
+    [K.cash,K.funding,K.assets,K.kyc,K.loginTime,K.registeredAt,K.name,K.email,K.pass,K.uid,K.session].forEach(del);
+    try { global.sessionStorage.removeItem(K.session); } catch (e) {}
   }
 
   /* ------------------------------------------------------------ portfolio */
@@ -977,6 +968,7 @@
     activity: activity,
     whenReady: whenReady,
     isRemote: remote,
+    flush: function () { return remote() ? BB.flush() : Promise.resolve(true); },
     dbStatus: function () { return BB ? BB.status() : 'local'; },
     dbError: function () { return BB ? BB.error() : null; },
     storageAvailable: function () { return !!ls(); },

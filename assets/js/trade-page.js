@@ -21,13 +21,7 @@
     ? { bal: 'bb_demo_trades_bal', pos: 'bb_demo_trades_pos', hist: 'bb_demo_trades_hist', seq: 'bb_demo_trade_id_counter' }
     : { bal: A.KEYS.cash, pos: 'bb_trade_positions', hist: 'bb_trades_history', seq: 'bb_trade_id_counter' };
 
-  if (!global.BitbaseShell.mount({
-    active: MODE === 'demo' ? 'demo' : 'trade',
-    bottom: MODE === 'demo' ? '' : 'trade',
-    badge: MODE === 'demo'
-      ? '<span class="demo-badge" style="box-shadow:none;"><span class="dot"></span> Practice Mode</span>'
-      : ''
-  })) return;
+
 
   var PAIRS = (F.instruments || F.coins.map(function (c) { return { sym: c.sym, name: c.name }; })).map(function (i) {
     return { sym: i.sym, name: i.name, group: i.group, venue: i.venue, label: F.pairLabel ? F.pairLabel(i.sym) : i.sym + '/USDT' };
@@ -573,6 +567,13 @@
 
   /* ------------------------------------------------------------- startup */
   function boot() {
+  if (!global.BitbaseShell.mount({
+    active: MODE === 'demo' ? 'demo' : 'trade',
+    bottom: MODE === 'demo' ? '' : 'trade',
+    badge: MODE === 'demo'
+      ? '<span class="demo-badge" style="box-shadow:none;"><span class="dot"></span> Practice Mode</span>'
+      : ''
+  })) return;
     S.chart = new global.CandleChart($('#tradeChart'), $('#chartHost'));
     S.chart.resize();
     S.chart.setType('candles');

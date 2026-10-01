@@ -11,7 +11,7 @@
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
 
-  if (!global.BitbaseShell.mount({ active: 'history' })) return;
+
 
   var PER_PAGE = 10;
   var S = { filter: 'all', q: '', from: '', to: '', page: 1, rows: [] };
@@ -294,6 +294,8 @@
   }
 
   function boot() {
+    if (!global.BitbaseShell.mount({ active: 'history' })) return;
+    global.addEventListener('bitbase:data', render);
     S.rows = collect();
     render();
 

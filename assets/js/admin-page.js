@@ -298,7 +298,7 @@
     });
 
     var live = '<span class="am-live"><span class="d"></span>' +
-      '<span id="amLiveText">Live user list \u00b7 ' + out.length + ' shown</span></span>';
+      '<span id="amLiveText">' + (A.isRemote() ? (global.BitbaseDB.realtime() ? 'Live user list' : 'Auto-refreshing user list') : 'Local user list') + ' \u00b7 ' + out.length + ' shown</span></span>';
     var search = '<input class="am-input" id="amUserSearch" placeholder="Search name, email or uid" ' +
       'style="max-width:280px;" value="' + esc(userQuery) + '">';
 
@@ -1638,7 +1638,10 @@
       if (again) { again.focus(); again.setSelectionRange(pos, pos); }
     });
     var refreshBtn = $('#amUserRefresh');
-    if (refreshBtn) refreshBtn.addEventListener('click', function () { render(); toast('User list refreshed', 'ok'); });
+    if (refreshBtn) refreshBtn.addEventListener('click', function () {
+      var job=global.BitbaseDB && A.isRemote() ? global.BitbaseDB.refresh() : Promise.resolve();
+      job.then(function () { render(); toast('User list refreshed', 'ok'); }).catch(function () { toast('Could not refresh users', 'bad'); });
+    });
 
     /* ---- users ---- */
     $$('[data-act]').forEach(function (b) {
@@ -1774,7 +1777,8 @@
       });
     });
     $$('[data-sact]').forEach(function (b) {
-      b.addEventListener('click', function () {
+      b.addEventListener('click', async function () {
+        if (b.disabled) return;
         var id = b.dataset.th;
         var act = b.dataset.sact;
         var need = SACT_PERM[act];
@@ -1797,7 +1801,10 @@
           t.messages = t.messages || [];
           t.messages.push({ from: 'admin', uid: A.get(A.KEYS.uid, ''), name: 'Admin', body: body, time: Date.now() });
           t.updated = Date.now();
+          b.disabled = true;
           save('bb_support_threads', threads);
+          try { await A.flush(); }
+          catch (e) { toast('Reply not delivered yet. Use Retry in the connection notice.', 'bad'); }
           render();
           var m = $('#amMsgs');
           if (m) m.scrollTop = m.scrollHeight;
@@ -2025,8 +2032,7 @@
     wireDrawer();
     $('#amLogout').addEventListener('click', function (e) {
       e.preventDefault();
-      A.logout();
-      global.location.href = 'login.html';
+      A.logout().then(function () { global.location.href = 'login.html'; }).catch(function (e) { if (global.BitbaseDB) global.BitbaseDB.warn(e); });
     });
     $('#amModalClose').addEventListener('click', closeModal);
     $('#amModal').addEventListener('click', function (e) { if (e.target === $('#amModal')) closeModal(); });
@@ -2043,35 +2049,38 @@
       buildNav();
     });
 
+    global.addEventListener('bitbase:session', function (e) { if (!e.detail.signedIn) global.location.replace('login.html'); });
+
     // Prime crypto prices so Total Assets and Analytics are not blank.
     F.loadMarkets().then(function (rows) { primePrices(rows); render(); }).catch(function () { render(); });
     // Open the shared feed once, and repaint the live numbers on a timer.
     F.openTickerStream(function () {}, function () {});
     setInterval(function () {
-      F.loadMarkets().then(function (rows) { primePrices(rows); render(); }).catch(function () {});
+      F.loadMarkets().then(function (rows) { primePrices(rows); paintLive(); }).catch(function () {});
     }, 45000);
 
-    // A user typing in the Assets chat panel writes into this same browser
-    // store, so watch the thread data and repaint when something new lands.
-    // Held off while the reply box has focus so a poll cannot wipe what the
-    // agent is part-way through typing.
-    var supportSig = function () {
-      return JSON.stringify(list('bb_support_threads').map(function (t) {
-        return [t.id, t.status, (t.messages || []).length, num(t.updated)];
-      }));
-    };
-    var lastSupportSig = supportSig();
-    setInterval(function () {
-      if (current !== 'support') { lastSupportSig = supportSig(); return; }
-      var sig = supportSig();
-      if (sig === lastSupportSig) return;
-      var box = $('#amReply');
-      if (box && document.activeElement === box) return;
-      lastSupportSig = sig;
+    // Refresh all admin queues when Supabase changes, preserving draft inputs.
+    function paintLive() {
+      buildNav();
+      var draft = [];
+      $$('#amView input[id], #amView textarea[id], #amView select[id]').forEach(function (el) {
+        draft.push({ id:el.id, value:el.value, checked:el.checked, focus:document.activeElement===el,
+          start:el.selectionStart, end:el.selectionEnd });
+      });
       render();
-      var m = $('#amMsgs');
-      if (m) m.scrollTop = m.scrollHeight;
-    }, 4000);
+      draft.forEach(function (d) {
+        var el = document.getElementById(d.id); if (!el) return;
+        el.value=d.value; if (typeof d.checked==='boolean') el.checked=d.checked;
+        if (d.focus) {
+          el.focus();
+          if (el.setSelectionRange && typeof d.start==='number') el.setSelectionRange(d.start,d.end);
+        }
+      });
+      var messages=$('#amMsgs'); if (messages) messages.scrollTop=messages.scrollHeight;
+    }
+    global.addEventListener('bitbase:data', paintLive);
+    global.addEventListener('bitbase:connection', paintLive);
+    if (!A.isRemote()) setInterval(paintLive, 2000);
 
     buildNav();
     render();
@@ -2081,6 +2090,13 @@
     if (!A || !A.isAuthenticated()) { global.location.replace('login.html'); return; }
 
     if (!A.isAdmin()) {
+      if (A.isRemote()) {
+        showGate();
+        $('#amGate p').textContent = 'This account has no admin access. Ask the project owner to grant access to your account.';
+        $('#amGatePw').style.display = 'none';
+        $('#amGateGo').style.display = 'none';
+        return;
+      }
       wireGate();
       showGate();
       if (global.lucide) global.lucide.createIcons();

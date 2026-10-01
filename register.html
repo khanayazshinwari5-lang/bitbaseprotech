@@ -182,7 +182,7 @@
 
         if (window.lucide) lucide.createIcons();
 
-        if (A && A.isAuthenticated()) { window.location.replace('dashboard.html'); return; }
+        if (A) A.whenReady(function () { if (A.isAuthenticated()) window.location.replace('dashboard.html'); });
 
         window.togglePassword = function (id, btn) {
             var input = $(id);
@@ -245,7 +245,13 @@
 
             busy(true);
             A.register({ name: name, email: email, password: pass, country: country })
-                .then(function () {
+                .then(function (result) {
+                    if (result && result.confirmationRequired) {
+                        busy(false);
+                        $('submitSuccess').textContent = 'Check your inbox to confirm your email, then sign in.';
+                        showError('submitSuccess');
+                        return;
+                    }
                     showError('submitSuccess');
                     setTimeout(function () { window.location.href = 'dashboard.html'; }, 700);
                 })

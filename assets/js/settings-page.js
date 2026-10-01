@@ -12,7 +12,7 @@
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
 
-  if (!global.BitbaseShell.mount({ active: 'settings' })) return;
+
 
   var PREF_KEY = 'bb_preferences';
   var NOTIFY_KEY = 'bb_notification_prefs';
@@ -366,7 +366,7 @@
     uploader('Front');
     uploader('Back');
 
-    $('#kycSubmitBtn').addEventListener('click', function () {
+    $('#kycSubmitBtn').addEventListener('click', async function () {
       var docs = A.readJSON('kyc_doc_Front', {}) || {};
       if (!docs.Front) { return; }
       var rec = A.readJSON(A.KEYS.users, {})[A.get(A.KEYS.uid, '')] || {};
@@ -391,8 +391,8 @@
         time: submitted
       });
       A.writeJSON('bb_kyc_requests', reqs.slice(0, 400));
-      kycStep(3);
-      renderKyc();
+      try { await A.flush(); kycStep(3); renderKyc(); }
+      catch (e) { if (global.BitbaseDB) global.BitbaseDB.warn(e); }
     });
     $('#kycFinishBtn').addEventListener('click', function () {
       var m = $('#kycModal');
@@ -417,6 +417,7 @@
   }
 
   function boot() {
+  if (!global.BitbaseShell.mount({ active: 'settings' })) return;
     loadProfile();
     renderLoginActivity();
     loadNotify();
@@ -453,8 +454,7 @@
 
     $('#updatePwBtn').addEventListener('click', updatePassword);
     $('#logoutAllBtn').addEventListener('click', function () {
-      A.logout();
-      global.location.href = 'login.html';
+      A.logout().then(function () { global.location.href = 'login.html'; }).catch(function (e) { if (global.BitbaseDB) global.BitbaseDB.warn(e); });
     });
 
     $('#savePrefsBtn').addEventListener('click', savePrefs);

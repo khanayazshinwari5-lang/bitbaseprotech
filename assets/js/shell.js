@@ -124,8 +124,7 @@
     if (out) {
       out.addEventListener('click', function (e) {
         e.preventDefault();
-        A.logout();
-        global.location.href = 'login.html';
+        A.logout().then(function () { global.location.href = 'login.html'; }).catch(function (e) { if (global.BitbaseDB) global.BitbaseDB.warn(e); });
       });
     }
   }
@@ -155,6 +154,7 @@
     if (bottom) bottom.innerHTML = bottomHtml(opts.bottom || active);
 
     paintIdentity();
+    global.addEventListener('bitbase:session', function (e) { if (!e.detail.signedIn) global.location.replace('login.html'); });
     wireDrawer();
 
     if (global.lucide) global.lucide.createIcons();

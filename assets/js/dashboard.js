@@ -19,7 +19,7 @@
       'Failed to load application scripts. <a href="index.html" style="color:#f7931a">Go home</a></div>';
     return;
   }
-  if (!global.BitbaseShell.mount({ active: 'dashboard' })) return;
+
 
   /* ------------------------------------------------------ coin metadata - */
   var COINS = [
@@ -462,8 +462,7 @@
 
   /* -------------------------------------------------------------- logout - */
   function doLogout() {
-    A.logout();
-    global.location.href = 'login.html';
+    A.logout().then(function () { global.location.href = 'login.html'; }).catch(function (e) { if (global.BitbaseDB) global.BitbaseDB.warn(e); });
   }
 
   /* ------------------------------------------------------ identity block - */
@@ -480,6 +479,7 @@
 
   /* ---------------------------------------------------------------- boot - */
   function boot() {
+  if (!global.BitbaseShell.mount({ active: 'dashboard' })) return;
     if (global.lucide) global.lucide.createIcons();
     paintIdentity();
 
@@ -522,6 +522,10 @@
 
     // Re-price the pinned final point on a slow cadence.
     state.chartTimer = setInterval(function () { loadChart(false); }, 30000);
+
+    global.addEventListener('bitbase:data', function () {
+      loadQuantities(); patchHoldings(); renderStats(); renderRecentActivity(); paintIdentity();
+    });
 
     // Another tab changing the balance should be reflected here.
     global.addEventListener('storage', function (e) {

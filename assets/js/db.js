@@ -1,704 +1,456 @@
-/* ==========================================================================
-   Bitbase – Supabase data layer
-
-   The app was written against a synchronous browser store: pages call
-   A.get / A.set / A.writeJSON and expect the value back immediately. Rewriting
-   twelve pages to await every read would be a large and pointless change, so
-   this layer keeps that API and makes it honest:
-
-     - The mirror. Everything lives in memory (`BB.mirror`) under the same
-       bb_* keys the app already uses. Reads hit the mirror and stay
-       synchronous.
-     - Boot. `BB.ready` loads the signed-in user's rows from Postgres into the
-       mirror before any page renders, so the first paint is already correct.
-     - Writes. set/writeJSON update the mirror immediately and queue the same
-       change for the database. The UI never waits on the network.
-
-   Every collection the app stores is mapped to a table here. Admin rows live in
-   one envelope table (`request_rows`) keyed by `kind`, which is why a new
-   feature only needs a line in MAP, not a migration.
-
-   With no Supabase configured, or the network down, this degrades to the
-   previous localStorage behaviour rather than breaking the page.
-   ========================================================================== */
+/* Bitbase database bridge. Supabase is authoritative unless useSupabase=false.
+   Reads use a typed mirror; writes are acknowledged, serialized and retryable.
+   RLS remains the authority for every read, write and realtime notification. */
 (function (global) {
   'use strict';
-
   var CFG = global.BITBASE_CONFIG || {};
-  var SDK = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js';
-
-  var mirror = {};            // bb_* key -> value
-  var pending = {};           // bb_* key -> debounce timer
-  var client = null;
-  var session = null;
-  var profile = null;         // the signed-in profiles row
-  var status = 'booting';     // booting | ready | local | error
-  var lastError = null;
-  var waiters = [];
-  var saved = {};             // server ids per key, so writes stay idempotent
-  var inflight = 0;
-  var profileError = null;    // why the signed-in user has no profile row
-
-  /* ---------------------------------------------------------------- mapping
-     table      - target table
-     kind       - request_rows discriminator (list collections)
-     key        - app_settings / user_settings discriminator
-     list       - the mirror holds an array of rows
-     global     - not user scoped (admin console settings, deposit addresses)
-     admin      - only an admin may write it
-  */
+  var configured = CFG.useSupabase !== false;
+  var mirror = {}, snapshots = {}, versions = {}, dirty = {}, timers = {}, running = {};
+  var client = null, session = null, profile = null, status = 'booting';
+  var lastError = null, profileError = null, generation = 0, mutation = 0;
+  var external = new Set(), channel = null, channelUid = '', live = false;
+  var refreshJob = null, refreshTimer = null, authTimer = null;
   var MAP = {
-    bb_deposit_requests:      { table: 'request_rows', kind: 'deposit',        list: true },
-    bb_withdrawal_requests:   { table: 'request_rows', kind: 'withdrawal',     list: true },
-    bb_borrow_requests:       { table: 'request_rows', kind: 'borrow',         list: true },
-    bb_kyc_requests:          { table: 'request_rows', kind: 'kyc',            list: true },
-    bb_transfer_requests:     { table: 'request_rows', kind: 'transfer',       list: true },
-    bb_convert_requests:      { table: 'request_rows', kind: 'convert',        list: true },
-    bb_trade_requests:        { table: 'request_rows', kind: 'trade_request',  list: true },
-    bb_activity:              { table: 'request_rows', kind: 'activity',       list: true },
-    bb_trades_history:        { table: 'request_rows', kind: 'trade',          list: true },
-    bb_trade_positions:       { table: 'request_rows', kind: 'position',       list: true },
-    bb_admin_adjustments:     { table: 'request_rows', kind: 'adjustment',     list: true },
-    bb_login_log:             { table: 'request_rows', kind: 'login',          list: true },
-    bb_notifications:         { table: 'request_rows', kind: 'notification',   list: true },
-
-    bb_support_threads:       { table: 'support_threads', list: true, admin: true },
-
-    bb_preferences:           { table: 'user_settings', key: 'preferences' },
-    bb_notification_prefs:    { table: 'user_settings', key: 'notification_prefs' },
-    bb_assets_hide_zero:      { table: 'user_settings', key: 'assets_hide_zero' },
-    bb_demo_trades_bal:       { table: 'user_settings', key: 'demo_trades_bal' },
+    bb_accounts: { accounts: true },
+    bb_deposit_requests: { table: 'request_rows', kind: 'deposit', list: true },
+    bb_withdrawal_requests: { table: 'request_rows', kind: 'withdrawal', list: true },
+    bb_borrow_requests: { table: 'request_rows', kind: 'borrow', list: true },
+    bb_kyc_requests: { table: 'request_rows', kind: 'kyc', list: true },
+    bb_transfer_requests: { table: 'request_rows', kind: 'transfer', list: true },
+    bb_convert_requests: { table: 'request_rows', kind: 'convert', list: true },
+    bb_trade_requests: { table: 'request_rows', kind: 'trade_request', list: true },
+    bb_activity: { table: 'request_rows', kind: 'activity', list: true },
+    bb_trades_history: { table: 'request_rows', kind: 'trade', list: true },
+    bb_trade_positions: { table: 'request_rows', kind: 'position', list: true },
+    bb_admin_adjustments: { table: 'request_rows', kind: 'adjustment', list: true },
+    bb_login_log: { table: 'request_rows', kind: 'login', list: true },
+    bb_notifications: { table: 'request_rows', kind: 'notification', list: true },
+    bb_support_threads: { table: 'support_threads', list: true },
+    bb_preferences: { table: 'user_settings', key: 'preferences' },
+    bb_notification_prefs: { table: 'user_settings', key: 'notification_prefs' },
+    bb_assets_hide_zero: { table: 'user_settings', key: 'assets_hide_zero' },
+    bb_demo_trades_bal: { table: 'user_settings', key: 'demo_trades_bal' },
     bb_demo_trade_id_counter: { table: 'user_settings', key: 'demo_trade_id_counter' },
-    bb_trade_id_counter:      { table: 'user_settings', key: 'trade_id_counter' },
-
-    bb_deposit_addresses:     { table: 'app_settings', key: 'deposit_addresses', global: true },
-    bb_admin_password:        { table: 'app_settings', key: 'admin_password', global: true, admin: true },
-
-    // These live on the profile row itself.
-    bb_cash_balance:          { profile: 'cash' },
-    bb_funding_balance:       { profile: 'funding' },
-    bb_asset_balances:        { profile: 'assets' },
-    bb_kyc_status:            { profile: 'kyc_status' }
+    bb_trade_id_counter: { table: 'user_settings', key: 'trade_id_counter' },
+    bb_deposit_addresses: { table: 'app_settings', key: 'deposit_addresses', admin: true },
+    bb_admin_password: { table: 'app_settings', key: 'admin_password', admin: true },
+    bb_cash_balance: { profile: 'cash' },
+    bb_funding_balance: { profile: 'funding' },
+    bb_asset_balances: { profile: 'assets' },
+    bb_kyc_status: { profile: 'kyc_status' }
   };
-
-  var KINDS = [];
-  Object.keys(MAP).forEach(function (k) { if (MAP[k].kind) KINDS.push(MAP[k].kind); });
-
-  /* ------------------------------------------------------------- utilities */
-  function uid() { return session && session.user ? session.user.id : ''; }
-  function isOn() { return !!(client && session); }
-
-  function clone(v) {
-    if (v === null || typeof v !== 'object') return v;
-    try { return JSON.parse(JSON.stringify(v)); } catch (e) { return v; }
+  var clone = function (v) { return v === undefined ? undefined : JSON.parse(JSON.stringify(v)); };
+  var equal = function (a, b) { return JSON.stringify(a) === JSON.stringify(b); };
+  var uid = function () { return session && session.user ? session.user.id : ''; };
+  var isOn = function () { return !!(client && uid()); };
+  var busy = function () { return Object.keys(dirty).length > 0 || external.size > 0; };
+  function emit(name, detail) { global.dispatchEvent(new CustomEvent(name, { detail: detail || {} })); }
+  function describe(e) { return (e && e.code ? e.code + ': ' : '') + ((e && e.message) || String(e)); }
+  function report(e) {
+    lastError = describe(e);
+    console.warn('[bitbase-db]', lastError);
+    warnBanner('Changes could not be saved or loaded. ' + lastError);
+    emit('bitbase:sync-error', { message: lastError });
+    return e;
   }
-
-  function ok(res) {
-    if (res && res.error) { fail(res.error); return null; }
-    return res;
+  async function checked(query) {
+    var r = await query;
+    if (r && r.error) throw r.error;
+    return r || {};
   }
-  function fail(err) {
-    lastError = (err && (err.message || err)) || 'Database error';
-    if (global.console && console.warn) console.warn('[bitbase-db]', lastError);
-    // Keep a copy so a failed sign-in can report something useful.
-    throw err;
+  function uuid() {
+    if (global.crypto.randomUUID) return global.crypto.randomUUID();
+    var a = global.crypto.getRandomValues(new Uint8Array(16));
+    a[6] = (a[6] & 15) | 64; a[8] = (a[8] & 63) | 128;
+    var h = Array.from(a, function (n) { return n.toString(16).padStart(2, '0'); }).join('');
+    return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20);
   }
-
-  /* RLS refuses writes from an admin acting on someone else's behalf only if
-     the policy says so; surfacing it here means the UI can tell the difference
-     between "not allowed" and "offline". */
-  function canWrite(spec) {
-    if (!spec || !spec.admin) return true;
-    return !!(profile && profile.admin);
+  function parsed(v) {
+    if (typeof v !== 'string') return v;
+    try { return JSON.parse(v); } catch (_) { return v; }
   }
-
-  /* ------------------------------------------------------------------ auth */
-  function loadSdk() {
-    if (global.supabase && global.supabase.createClient) return Promise.resolve();
-    return new Promise(function (res, rej) {
-      var s = document.createElement('script');
-      s.src = SDK;
-      s.onload = function () { global.supabase ? res() : rej(new Error('supabase-js did not load')); };
-      s.onerror = function () { rej(new Error('Could not reach the Supabase CDN')); };
-      document.head.appendChild(s);
-    });
+  function stopLive() {
+    if (channel && client) client.removeChannel(channel);
+    channel = null; channelUid = ''; live = false;
   }
-
-  /* Supabase's client appends /rest/v1 and /auth/v1 itself. Pasting the REST
-     path out of the dashboard instead of the project URL is the single easiest
-     mistake to make here, and it fails silently - every request 404s and the
-     site quietly carries on with no database. So strip it. */
-  function normaliseUrl(raw) {
-    var u = String(raw || '').trim();
-    u = u.replace(/\/+$/, '');
-    u = u.replace(/\/rest\/v1$/i, '');
-    u = u.replace(/\/auth\/v1$/i, '');
-    return u;
-  }
-
-  function connect() {
-    var url = normaliseUrl(CFG.supabaseUrl);
-    if (!url || url.indexOf('YOUR-PROJECT') > -1) {
-      return Promise.reject(new Error('supabaseUrl is not set in supabase-config.js'));
+  function acceptSession(next) {
+    var old = uid(), id = next && next.user ? next.user.id : '';
+    if (old !== id) {
+      generation++; stopLive();
+      Object.keys(timers).forEach(function (k) { clearTimeout(timers[k]); });
+      timers = {}; dirty = {}; snapshots = {}; versions = {}; running = {}; profile = null;
+      Object.keys(mirror).forEach(function (k) { delete mirror[k]; });
     }
-    if (!CFG.supabaseAnonKey || String(CFG.supabaseAnonKey).indexOf('YOUR-ANON') > -1) {
-      return Promise.reject(new Error('supabaseAnonKey is not set in supabase-config.js'));
+    session = next || null;
+    if (!id) profile = null;
+  }
+  function toAccount(p) {
+    return { uid:p.id, code:p.code, name:p.name || '', email:p.email || '', country:p.country || 'other',
+      created:new Date(p.created || 0).getTime(), loginAt:new Date(p.login_at || 0).getTime(),
+      cash:Number(p.cash || 0), funding:Number(p.funding || 0), assets:p.assets || {},
+      kyc_status:p.kyc_status || 'none', phone:p.phone || '', phone_verified:!!p.phone_verified,
+      profitMode:!!p.profit_mode, disabled:!!p.disabled, admin:p.admin === true, owner:p.is_owner === true,
+      perms:p.perms || {}, salt:null };
+  }
+  function mirrorProfile(p) {
+    profile = p;
+    if (!p) return;
+    mirror.bb_uid=p.id; mirror.bb_name=p.name; mirror.bb_email=p.email;
+    mirror.bb_registered_at=new Date(p.created).getTime(); mirror.bb_login_time=new Date(p.login_at || 0).getTime();
+    mirror.bb_cash_balance=Number(p.cash || 0); mirror.bb_funding_balance=Number(p.funding || 0);
+    mirror.bb_asset_balances=p.assets || {}; mirror.bb_kyc_status=p.kyc_status || 'none';
+    var accounts = mirror.bb_accounts || {}; accounts[p.id]=toAccount(p); mirror.bb_accounts=accounts;
+  }
+  async function ensureProfile() {
+    if (!isOn()) return null;
+    var g = generation, id = uid();
+    profileError = null;
+    try {
+      var r = await checked(client.from('profiles').select('*').eq('id', id).maybeSingle());
+      if (!r.data) {
+        // Only this authenticated account can be repaired. Roles are server defaults.
+        r = await checked(client.rpc('ensure_my_profile'));
+        if (Array.isArray(r.data)) r.data = r.data[0];
+      }
+      if (!r.data) throw new Error('Account profile is missing. Run supabase/repair-auth-realtime.sql.');
+      if (g !== generation) return null;
+      mirrorProfile(r.data);
+      return profile;
+    } catch (e) {
+      profileError = describe(e);
+      throw new Error('Could not load the account profile. ' + profileError + ' Apply supabase/repair-auth-realtime.sql if database setup is incomplete.');
     }
-    if (CFG.useSupabase === false) return Promise.reject(new Error('Supabase disabled in config'));
-    return loadSdk().then(function () {
-      client = global.supabase.createClient(url, CFG.supabaseAnonKey);
-      // Prove the project is actually reachable before the app trusts it.
-      return fetch(url + '/auth/v1/settings', { headers: { apikey: CFG.supabaseAnonKey } })
-        .then(function (r) {
-          if (!r.ok) throw new Error('Supabase answered ' + r.status + ' for ' + url);
-          return client.auth.getSession();
-        });
-    });
   }
-
-  function onSession(next) {
-    session = next && next.session ? next.session : null;
-    if (!session) { profile = null; }
+  async function allRows(makeQuery) {
+    var out = [], offset = 0, size = 500;
+    for (;;) {
+      var r = await checked(makeQuery().range(offset, offset + size - 1));
+      var rows = r.data || []; out = out.concat(rows);
+      if (rows.length < size) return out;
+      offset += size;
+    }
   }
-
-  /* ------------------------------------------------------------- hydration */
-  /* Pull this user's whole world into the mirror. Four queries: one per table
-     family, regardless of how many collections are mapped. */
-  function hydrate() {
-    if (!isOn()) { status = 'local'; return Promise.resolve(); }
-    var jobs = [];
-
-    jobs.push(
-      ok(client.from('profiles').select('*').eq('id', uid()).limit(1)).then(function (r) {
-        profile = (r.data && r.data[0]) || null;
-        if (profile) {
-          mirror.bb_uid = profile.id;
-          mirror.bb_name = profile.name || '';
-          mirror.bb_email = profile.email || '';
-          mirror.bb_registered_at = profile.created;
-          mirror.bb_cash_balance = Number(profile.cash || 0);
-          mirror.bb_funding_balance = Number(profile.funding || 0);
-          mirror.bb_asset_balances = profile.assets || {};
-          mirror.bb_kyc_status = profile.kyc_status || 'none';
-        }
-      })
-    );
-
-    // One query for every mapped collection in request_rows.
-    jobs.push(
-      ok(client.from('request_rows').select('*').in('kind', KINDS).order('created', { ascending: false }).limit(2000))
-        .then(function (r) {
-          var rows = (r.data || []);
-          KINDS.forEach(function (kind) {
-            var mine = rows.filter(function (x) { return x.kind === kind; });
-            var key = keyForKind(kind);
-            if (!key) return;
-            saved[key] = {};
-            mirror[key] = mine.map(function (row) {
-              saved[key][row.id] = true;
-              return unrow(row);
-            });
-          });
-        })
-    );
-
-    jobs.push(
-      ok(client.from('support_threads').select('*').order('updated', { ascending: false }).limit(300))
-        .then(function (r) { return { threads: r.data || [] }; })
-        .then(function (res) {
-          var threads = res.threads;
-          if (!threads.length) return { threads: threads, msgs: [] };
-          return ok(client.from('support_messages').select('*').in('thread_id', threads.map(function (t) { return t.id; }))
-            .order('created', { ascending: true }).limit(3000))
-            .then(function (m) { return { threads: threads, msgs: (m && m.data) || [] }; });
-        })
-        .then(function (res) {
-          saved.bb_support_threads = {};
-          mirror.bb_support_threads = res.threads.map(function (t) {
-            saved.bb_support_threads[t.id] = true;
-            return {
-              _sid: t.id, id: 'SUP-' + t.id.slice(0, 8),
-              uid: t.user_id || '', name: t.name, email: t.email,
-              subject: t.subject, status: t.status,
-              created: new Date(t.created).getTime(),
-              updated: new Date(t.updated).getTime(),
-              messages: res.msgs.filter(function (m) { return m.thread_id === t.id; }).map(unmsg)
-            };
-          });
-        })
-    );
-
-    jobs.push(
-      ok(client.from('user_settings').select('*').eq('user_id', uid()).limit(200))
-        .then(function (r) {
-          (r.data || []).forEach(function (row) {
-            var key = keyForSetting(row.key);
-            if (key) mirror[key] = row.value;
-          });
-        })
-    );
-
-    jobs.push(
-      ok(client.from('app_settings').select('*').in('key', ['deposit_addresses', 'admin_password']))
-        .then(function (r) {
-          (r.data || []).forEach(function (row) {
-            var key = row.key === 'admin_password' ? 'bb_admin_password' : 'bb_deposit_addresses';
-            mirror[key] = row.value;
-          });
-        })
-    );
-
-    return Promise.all(jobs).then(function () { status = 'ready'; });
-  }
-
-  function unrow(row) {
-    var data = clone(row.data) || {};
-    data._sid = row.id;
-    if (data.userId === undefined) data.userId = row.user_id || '';
-    if (data.status === undefined) data.status = row.status;
+  function requestData(r) {
+    var data = clone(r.data) || {};
+    data._sid = r.id; data.userId = r.user_id; data.status = r.status;
+    if (data.time === undefined) data.time = new Date(r.created).getTime();
     return data;
   }
-  function unmsg(m) {
-    return { _mid: m.id, from: m.sender, body: m.body, image: m.image, time: new Date(m.created).getTime() };
+  function threadData(t, messages) {
+    return { _sid:t.id, id:'SUP-'+t.id, uid:t.user_id, name:t.name, email:t.email,
+      subject:t.subject, status:t.status, created:new Date(t.created).getTime(), updated:new Date(t.updated).getTime(),
+      messages:messages.filter(function (m) { return m.thread_id === t.id; }).map(function (m) {
+        return { _mid:m.id, from:m.sender, body:m.body, image:m.image, name:(m.meta || {}).name || '', time:new Date(m.created).getTime() };
+      }) };
   }
-
-  function keyForKind(kind) {
-    var found = null;
-    Object.keys(MAP).forEach(function (k) { if (MAP[k].kind === kind) found = k; });
-    return found;
+  function snapshot(key, rows) {
+    snapshots[key] = {};
+    rows.forEach(function (r) { snapshots[key][r._sid] = clone(r); });
   }
-  function keyForSetting(name) {
-    var found = null;
-    Object.keys(MAP).forEach(function (k) {
-      if (MAP[k].table === 'user_settings' && MAP[k].key === name) found = k;
+  async function hydrate() {
+    if (!isOn() || busy()) return false;
+    var g = generation, m = mutation, id = uid();
+    // Paginated reads avoid the server's default 1,000-row cap. RLS scopes them.
+    var r = await Promise.all([
+      allRows(function () { return client.from('profiles').select('*').order('id'); }),
+      allRows(function () { return client.from('request_rows').select('*').order('id'); }),
+      allRows(function () { return client.from('support_threads').select('*').order('id'); }),
+      allRows(function () { return client.from('support_messages').select('*').order('created').order('id'); }),
+      allRows(function () { return client.from('user_settings').select('*').eq('user_id', id).order('key'); }),
+      allRows(function () { return client.from('app_settings').select('*').order('key'); })
+    ]);
+    if (g !== generation || m !== mutation || busy()) { scheduleRefresh(); return false; }
+    var own = r[0].find(function (p) { return p.id === id; });
+    if (!own) throw new Error('Your account profile is not readable. Apply the database repair script.');
+    var before = JSON.stringify(mirror);
+    var accounts = {};
+    r[0].forEach(function (p) { accounts[p.id]=toAccount(p); });
+    mirror.bb_accounts=accounts; mirror['bb_accounts:snapshot']=clone(accounts); mirrorProfile(own);
+    Object.keys(MAP).forEach(function (key) {
+      var spec=MAP[key];
+      if (spec.kind) {
+        mirror[key]=r[1].filter(function (row) { return row.kind===spec.kind; })
+          .sort(function (a,b) { return new Date(b.created)-new Date(a.created); }).map(requestData);
+        snapshot(key, mirror[key]);
+      } else if (spec.table==='user_settings' || spec.table==='app_settings') {
+        var found=r[spec.table==='user_settings' ? 4 : 5].find(function (row) { return row.key===spec.key; });
+        if (found) mirror[key]=found.value; else delete mirror[key];
+      }
     });
-    return found;
+    r[1].concat(r[2]).forEach(function (row) { versions[row.id]=row.updated; });
+    mirror.bb_support_threads=r[2].sort(function (a,b) { return new Date(b.updated)-new Date(a.updated); })
+      .map(function (t) { return threadData(t,r[3]); });
+    snapshot('bb_support_threads', mirror.bb_support_threads);
+    status='ready'; lastError=null;
+    var banner=document.getElementById('bbDbWarn'); if (banner) banner.remove();
+    if (before !== JSON.stringify(mirror)) emit('bitbase:data');
+    return true;
   }
-
-  /* ---------------------------------------------------------------- writes */
-  /* set() is synchronous and optimistic; this is the part that catches up. */
-  function persist(key) {
-    var spec = MAP[key];
-    if (!spec || !isOn() || !profile) return Promise.resolve(false);
-    if (spec.admin && !profile.admin) return Promise.resolve(false);
-    if (inflight > 6) return Promise.resolve(false);      // stop a runaway queue
-
-    if (spec.profile) return writeProfile(key, spec, mirror[key]);
-    if (spec.table === 'request_rows') return writeRows(key, spec, mirror[key]);
-    if (spec.table === 'user_settings') return writeSetting(key, spec, mirror[key]);
-    if (spec.table === 'app_settings') return writeAppSetting(key, spec, mirror[key]);
-    if (spec.table === 'support_threads') return writeThreads(key, mirror[key]);
-    return Promise.resolve(false);
+  function scheduleRefresh() {
+    if (refreshTimer || !isOn()) return;
+    refreshTimer=setTimeout(function () { refreshTimer=null; refresh().catch(function () {}); }, 60);
   }
-
-  function writeProfile(key, spec, value) {
-    var patch = {};
-    patch[spec.profile] = (spec.profile === 'assets')
-      ? (value || {})
-      : (spec.profile === 'kyc_status' ? String(value || 'none') : Number(value || 0));
-    inflight++;
-    return client.from('profiles').update(patch).eq('id', uid())
-      .then(function (r) { inflight--; return ok(r); })
-      .catch(function (e) { inflight--; return fail(e); });
+  async function refresh() {
+    if (!isOn() || busy()) return false;
+    if (refreshJob) { scheduleRefresh(); return refreshJob; }
+    refreshJob=hydrate().catch(function (e) { report(e); throw e; }).finally(function () { refreshJob=null; });
+    return refreshJob;
   }
-
-  /* Diff against what the server already has: insert the new, update the
-     changed, delete what the app removed. _sid is what makes it idempotent. */
-  function writeRows(key, spec, rows) {
-    rows = Array.isArray(rows) ? rows : [];
-    inflight++;
-    return ok(client.from('request_rows').select('id').eq('kind', spec.kind))
-      .then(function (r) {
-        var server = {};
-        (r.data || []).forEach(function (row) { server[row.id] = true; });
-        var known = saved[key] || {};
-        var mine = {};
-        var ops = [];
-        rows.forEach(function (row) {
-          var clean = clone(row);
-          var sid = clean._sid;
-          delete clean._sid;
-          if (sid && server[sid]) {
-            mine[sid] = true;
-            ops.push(client.from('request_rows').update({
-              data: clean, status: clean.status || 'pending',
-              amount: numv(clean.amount), ref: clean.id || null
-            }).eq('id', sid));
-          } else {
-            ops.push(client.from('request_rows').insert({
-              kind: spec.kind, user_id: uid(), data: clean,
-              status: clean.status || 'pending', amount: numv(clean.amount),
-              ref: clean.id || null
-            }).select('id').single().then(function (res) {
-              var id = res && res.data ? res.data.id : null;
-              if (id) { clean._sid = id; mine[id] = true; row._sid = id; }
-              return res;
-            }));
-          }
-        });
-        Object.keys(server).forEach(function (id) {
-          if (!mine[id] && !known[id]) ops.push(client.from('request_rows').delete().eq('id', id));
-        });
-        return Promise.all(ops.map(function (p) { return p.then(ok, function (e) { return fail(e); }); }));
-      })
-      .then(function () { inflight--; saved[key] = {}; })
-      .catch(function (e) { inflight--; return fail(e); });
+  function startLive() {
+    if (!isOn() || !profile || channelUid===uid()) return;
+    stopLive(); channelUid=uid();
+    channel=client.channel('bitbase-'+uid());
+    ['profiles','request_rows','support_threads','support_messages','user_settings','app_settings'].forEach(function (table) {
+      channel.on('postgres_changes', { event:'*', schema:'public', table:table }, scheduleRefresh);
+    });
+    channel.subscribe(function (state) {
+      live=state==='SUBSCRIBED';
+      emit('bitbase:connection', { realtime:live, state:state });
+      if (live) scheduleRefresh();
+    });
   }
-
-  function writeSetting(key, spec, value) {
-    if (value === undefined || value === null) {
-      inflight++;
-      return client.from('user_settings').delete().eq('user_id', uid()).eq('key', spec.key)
-        .then(function (r) { inflight--; return ok(r); })
-        .catch(function (e) { inflight--; return fail(e); });
+  async function refreshSession() {
+    if (!client) throw new Error(lastError || 'The sign-in service is unavailable. Reload and try again.');
+    var r=await checked(client.auth.getSession());
+    acceptSession(r.data && r.data.session);
+    if (!isOn()) return null;
+    await ensureProfile();
+    if (profile.disabled) {
+      await client.auth.signOut(); acceptSession(null);
+      throw new Error('This account has been deactivated. Please contact support.');
     }
-    inflight++;
-    return ok(client.from('user_settings').upsert(
-      { user_id: uid(), key: spec.key, value: value }, { onConflict: 'user_id,key' }))
-      .then(function (r) { inflight--; return r; })
-      .catch(function (e) { inflight--; return fail(e); });
+    await refresh(); startLive();
+    return profile;
   }
-
-  function writeAppSetting(key, spec, value) {
-    if (value === undefined || value === null) {
-      inflight++;
-      return client.from('app_settings').delete().eq('key', spec.key)
-        .then(function (r) { inflight--; return ok(r); })
-        .catch(function (e) { inflight--; return fail(e); });
+  function prepare(key) {
+    var spec=MAP[key];
+    if (!spec) return;
+    var value=parsed(mirror[key]); mirror[key]=value;
+    if (spec.list && Array.isArray(value)) value.forEach(function (row) {
+      row._sid=row._sid || uuid();
+      if (spec.table==='support_threads') (row.messages || []).forEach(function (msg) { msg._mid=msg._mid || uuid(); });
+    });
+  }
+  async function insertOnce(table, payload) {
+    var r=await checked(client.from(table).upsert(payload, { onConflict:'id', ignoreDuplicates:true }).select('*'));
+    if (r.data && r.data[0]) return r.data[0];
+    r=await checked(client.from(table).select('*').eq('id',payload.id).single());
+    if (!r.data) throw new Error('The saved record could not be confirmed.');
+    return r.data;
+  }
+  function cleanRequest(row) { var r=clone(row); delete r._sid; return r; }
+  async function writeRows(key, spec, rows, owner, g) {
+    var known=snapshots[key] || {};
+    for (var row of rows || []) {
+      if (g!==generation) throw new Error('Session changed before saving.');
+      var old=known[row._sid];
+      if (old && equal(cleanRequest(old),cleanRequest(row))) continue;
+      var clean=cleanRequest(row), record;
+      if (old) {
+        var q=client.from('request_rows').update({ data:clean, status:clean.status || 'pending', amount:Number(clean.amount) || null, ref:clean.id || null }).eq('id',row._sid);
+        if (versions[row._sid]) q=q.eq('updated',versions[row._sid]);
+        var res=await checked(q.select('*').maybeSingle()); record=res.data;
+        if (!record) throw new Error('This request changed in another session. Reload before editing it again.');
+      } else {
+        record=await insertOnce('request_rows', { id:row._sid, kind:spec.kind, user_id:clean.userId || clean.uid || owner,
+          data:clean, status:clean.status || 'pending', amount:Number(clean.amount) || null, ref:clean.id || null });
+      }
+      if (g!==generation) return;
+      known[row._sid]=clone(row); versions[row._sid]=record.updated; snapshots[key]=known;
     }
-    inflight++;
-    return ok(client.from('app_settings').upsert(
-      { key: spec.key, value: value }, { onConflict: 'key' }))
-      .then(function (r) { inflight--; return r; })
-      .catch(function (e) { inflight--; return fail(e); });
+    // Only a deliberate admin removal of a previously loaded row can delete it.
+    // Unseen rows and customer history trimmed from a display are never deleted.
+    if (profile && profile.admin) for (var id of Object.keys(known)) {
+      if (!(rows || []).some(function (r) { return r._sid===id; })) {
+        await checked(client.from('request_rows').delete().eq('id',id)); delete known[id];
+      }
+    }
   }
-
-  function writeThreads(key, threads) {
-    threads = Array.isArray(threads) ? threads : [];
-    inflight++;
-    return ok(client.from('support_threads').select('id, updated').limit(500))
-      .then(function (r) {
-        var server = {};
-        (r.data || []).forEach(function (row) { server[row.id] = true; });
-        var mine = {};
-        var ops = [];
-        var follow = [];
-        threads.forEach(function (t) {
-          var clean = {
-            user_id: uid(), name: t.name || '', email: t.email || '',
-            subject: t.subject || 'Chat enquiry', status: t.status || 'open'
-          };
-          if (t._sid && server[t._sid]) {
-            mine[t._sid] = true;
-            ops.push(client.from('support_threads').update(clean).eq('id', t._sid).then(function (res) {
-              follow.push(t._sid);
-              return res;
-            }));
-          } else {
-            ops.push(client.from('support_threads').insert(clean).select('id').single().then(function (res) {
-              if (res && res.data) { t._sid = res.data.id; mine[res.data.id] = true; follow.push(res.data.id); }
-              return res;
-            }));
-          }
-        });
-        Object.keys(server).forEach(function (id) { if (!mine[id]) ops.push(client.from('support_threads').delete().eq('id', id)); });
-        return Promise.all(ops).then(function () { return follow; });
-      })
-      .then(function (ids) { return writeMessages(threads, ids || []); })
-      .then(function () { inflight--; })
-      .catch(function (e) { inflight--; return fail(e); });
-  }
-
-  /* Messages are append-only: anything the app holds that the server has not
-     seen (_mid missing) is new. Deletions are handled by deleting the thread,
-     which cascades. */
-  function writeMessages(threads, ids) {
-    if (!ids.length) return Promise.resolve();
-    return ok(client.from('support_messages').select('id, thread_id').in('thread_id', ids).limit(3000))
-      .then(function (r) {
-        var server = {};
-        (r.data || []).forEach(function (m) { server[m.id] = true; });
-        var rows = [];
-        threads.forEach(function (t, i) {
-          var tid = ids.indexOf(t._sid) > -1 ? t._sid : ids[i];
-          if (!tid) return;
-          (t.messages || []).forEach(function (m) {
-            if (m._mid && server[m._mid]) return;
-            rows.push({
-              thread_id: tid, sender: m.from === 'admin' ? 'admin' : 'user',
-              body: String(m.body || ''), image: m.image || null,
-              meta: { name: m.name || '' }
-            });
-          });
-        });
-        if (!rows.length) return null;
-        return client.from('support_messages').insert(rows).then(function (res) {
-          (res.data || []).forEach(function (savedRow) { server[savedRow.id] = true; });
-          return res;
-        });
-      }).then(ok);
-  }
-
-  /* Belt and braces for the profile row. The schema has an AFTER INSERT trigger on
-     auth.users that creates it, which is the right place for it - but if that
-     trigger was never created, or an older account predates it, the user is
-     signed in with no profile and every page reads as empty. A user may insert
-     and edit only their own row, so this cannot touch anybody else, and the
-     role columns are left to the trigger and to the admin console. */
-  function randomCode() {
-    var n = Math.floor(Math.random() * 900000) + 100000;
-    return String(n);
-  }
-
-  function ensureProfile(meta) {
-    if (!isOn() || !session || !session.user) return Promise.resolve(null);
-    var user = session.user;
-    var metaIn = user.user_metadata || {};
-    var wanted = {
-      name: (meta && meta.name) || metaIn.name || '',
-      country: (meta && meta.country) || metaIn.country || 'other'
-    };
-    profileError = null;
-    return client.from('profiles').select('*').eq('id', uid()).limit(1).maybeSingle()
-      .then(function (r) {
-        if (r && r.data) {
-          profile = r.data;
-          mirrorAccounts();
-          return profile;
+  async function writeThreads(key, threads, owner, g) {
+    var known=snapshots[key] || {};
+    for (var t of threads || []) {
+      if (g!==generation) throw new Error('Session changed before saving.');
+      var old=known[t._sid], meta={ name:t.name || '', email:t.email || '', subject:t.subject || 'Chat enquiry', status:t.status || 'open' };
+      if (!old) {
+        await insertOnce('support_threads', Object.assign({ id:t._sid, user_id:t.uid || owner },meta));
+        old=clone(t); old.messages=[]; known[t._sid]=old; snapshots[key]=known;
+      } else {
+        var patch={};
+        Object.keys(meta).forEach(function (k) { if (old[k]!==meta[k]) patch[k]=meta[k]; });
+        // Ownership is immutable here; admin replies keep the customer's user_id.
+        if (Object.keys(patch).length) {
+          var updated=await checked(client.from('support_threads').update(patch).eq('id',t._sid).select('id').maybeSingle());
+          if (!updated.data) throw new Error('The support conversation is no longer available.');
+          Object.assign(old,patch);
         }
-        if (r && r.error) throw r.error;
-        // RLS allows this: a row with your own id, and no role columns set.
-        return client.from('profiles').insert({
-          id: uid(), code: randomCode(),
-          email: user.email || '', name: wanted.name, country: wanted.country
-        }).select('*').single();
-      })
-      .then(function (r) {
-        if (r && r.data) { profile = r.data; mirrorAccounts(); return profile; }
-        if (r && r.error) throw r.error;
-        return null;
-      })
-      .catch(function (e) {
-        // Kept, not swallowed: this is the one failure the user cannot fix from
-        // the browser, and a generic "could not load your account" tells nobody
-        // whether it is RLS, a missing table or a network problem.
-        profileError = describe(e);
-        if (global.console && console.warn) console.warn('[bitbase-db] ensureProfile:', profileError);
-        return null;
-      });
+      }
+      var existing=new Set((old.messages || []).map(function (msg) { return msg._mid; }));
+      for (var msg of t.messages || []) {
+        if (existing.has(msg._mid)) continue;
+        await insertOnce('support_messages', { id:msg._mid, thread_id:t._sid, sender:msg.from==='admin' ? 'admin' : 'user',
+          body:String(msg.body || ''), image:msg.image || null, meta:{ name:msg.name || '' } });
+        old.messages.push(clone(msg)); existing.add(msg._mid);
+      }
+    }
+    if (profile && profile.admin) for (var id of Object.keys(known)) {
+      if (!(threads || []).some(function (t) { return t._sid===id; })) {
+        await checked(client.from('support_threads').delete().eq('id',id)); delete known[id];
+      }
+    }
   }
-
-  /* Postgres says "row-level security policy" a lot; say which statement. */
-  function describe(e) {
-    var msg = (e && (e.message || e.error_description || (e.details && e.details.hint))) || 'unknown error';
-    var code = (e && (e.code || '')) || '';
-    return (code ? code + ': ' : '') + String(msg);
+  async function persistValue(key, value, owner, g) {
+    var spec=MAP[key];
+    if (!isOn() || !profile || g!==generation) throw new Error('Please sign in before saving.');
+    if (spec.admin && !profile.admin) throw new Error('Administrator access is required.');
+    if (spec.accounts) {
+      var columns={name:'name',email:'email',country:'country',cash:'cash',funding:'funding',assets:'assets',
+        kyc_status:'kyc_status',phone:'phone',phone_verified:'phone_verified',profitMode:'profit_mode',
+        disabled:'disabled',admin:'admin',owner:'is_owner',perms:'perms'};
+      var before=mirror['bb_accounts:snapshot'] || {};
+      for (var id of Object.keys(value || {})) {
+        var record=value[id], previous=before[id] || {}, changes={};
+        Object.keys(columns).forEach(function (field) {
+          var next=record[field];
+          if (next===undefined && ['admin','owner','disabled'].includes(field)) next=false;
+          if (next===undefined && field==='perms') next={};
+          if (next!==undefined && !equal(next,previous[field])) changes[columns[field]]=next;
+        });
+        if (Object.keys(changes).length) await saveProfileFor(id,changes);
+      }
+    } else if (spec.profile) {
+      var patch={}; patch[spec.profile]=value;
+      var result=await checked(client.from('profiles').update(patch).eq('id',owner).select('id').maybeSingle());
+      if (!result.data) throw new Error('The profile update was refused.');
+    } else if (spec.table==='request_rows') await writeRows(key,spec,value,owner,g);
+    else if (spec.table==='support_threads') await writeThreads(key,value,owner,g);
+    else {
+      var row={ key:spec.key, value:value }, q;
+      if (spec.table==='user_settings') row.user_id=owner;
+      if (value===undefined || value===null) {
+        q=client.from(spec.table).delete().eq('key',spec.key);
+        if (row.user_id) q=q.eq('user_id',owner);
+      } else q=client.from(spec.table).upsert(row,{ onConflict:row.user_id ? 'user_id,key' : 'key' });
+      await checked(q);
+    }
   }
-
-  /* ------------------------------------------------------------- accounts */
-  /* The profile row is the account. Admin edits go through here so RLS and the
-     role guard in the schema decide what is allowed, not the browser. */
-  function saveProfile(patch) {
-    return saveProfileFor(profile ? profile.id : '', patch);
+  function drain(key) {
+    if (running[key]) return running[key];
+    clearTimeout(timers[key]); delete timers[key];
+    var g=generation, owner=uid();
+    var job=(async function () {
+      while (dirty[key] && g===generation) {
+        var rev=dirty[key], value=clone(parsed(mirror[key]));
+        await persistValue(key,value,owner,g);
+        if (g===generation && dirty[key]===rev) delete dirty[key];
+      }
+    })().catch(function (e) { report(e); throw e; }).finally(function () {
+      if (running[key]===job) delete running[key];
+    });
+    running[key]=job;
+    return job;
   }
-
-  /* An admin editing somebody else's account needs to name the row explicitly;
-     RLS and the trigger guard in the schema decide whether it is allowed. */
+  function queue(key) {
+    if (!MAP[key]) return;
+    prepare(key); dirty[key]=++mutation;
+    clearTimeout(timers[key]);
+    timers[key]=setTimeout(function () { drain(key).then(scheduleRefresh).catch(function () {}); },80);
+  }
+  async function flush() {
+    await ready;
+    if (!configured) return true;
+    if (!isOn() || !profile) throw new Error('Please sign in before saving.');
+    do {
+      await Promise.all(Object.keys(dirty).map(drain).concat(Array.from(external)));
+    } while (busy());
+    lastError=null;
+    var banner=document.getElementById('bbDbWarn'); if (banner) banner.remove();
+    scheduleRefresh(); emit('bitbase:saved');
+    return true;
+  }
   function saveProfileFor(id, patch) {
-    if (!isOn() || !id) return Promise.resolve(false);
-    inflight++;
-    return ok(client.from('profiles').update(patch).eq('id', id).select('*').maybeSingle())
+    if (!isOn() || !id) return Promise.reject(new Error('Please sign in before saving.'));
+    var g=generation; mutation++;
+    var p=checked(client.from('profiles').update(patch).eq('id',id).select('*').maybeSingle())
       .then(function (r) {
-        inflight--;
-        if (r && r.data && profile && r.data.id === profile.id) { profile = r.data; mirrorAccounts(); }
-        else if (r && r.data) {
-          var map = mirror.bb_accounts || {};
-          map[r.data.id] = toAccount(r.data);
-          mirror.bb_accounts = map;
+        if (!r.data) throw new Error('The profile update was refused.');
+        if (g===generation) {
+          var map=mirror.bb_accounts || {}, snap=mirror['bb_accounts:snapshot'] || {};
+          // Update only the acknowledged fields; a second pending edit may exist.
+          var server=toAccount(r.data); snap[id]=clone(server); mirror['bb_accounts:snapshot']=snap;
+          if (!map[id]) map[id]=server;
         }
         return r;
-      })
-      .catch(function (e) { inflight--; return fail(e); });
+      }).catch(function (e) { report(e); throw e; }).finally(function () { external.delete(p); scheduleRefresh(); });
+    external.add(p); return p;
   }
-
-  /* Removing an account here drops its profile, and every table cascades from
-     it - ledgers, threads, settings. The row in auth.users has to be deleted
-     from the Supabase dashboard (or an Edge Function holding the service key);
-     the anon key cannot do it, by design. */
-  function deleteAccountFor(id) {
-    if (!isOn() || !id) return Promise.reject({ message: 'Not signed in to the database' });
-    return ok(client.from('profiles').delete().eq('id', id))
-      .then(function () {
-        var map = mirror.bb_accounts || {};
-        delete map[id];
-        mirror.bb_accounts = map;
-        return true;
-      })
-      .catch(function (e) { return Promise.reject({ message: (e && e.message) || 'Could not delete' }); });
+  async function loadAccounts() { await refresh(); return mirror.bb_accounts || {}; }
+  async function deleteAccountFor(id) {
+    await checked(client.from('profiles').delete().eq('id',id)); await refresh(); return true;
   }
-
-  /* Called after sign-up or sign-in: the session changed, so the mirror has to
-     be rebuilt from the new user before any page reads it. */
-  function refreshSession() {
-    if (!client) return Promise.resolve(null);
-    return client.auth.getSession().then(function (res) {
-      onSession(res);
-      return ensureProfile().then(function () { return hydrate(); });
-    });
+  async function audit(action,target,detail) {
+    if (!isOn() || !profile || !profile.admin) return false;
+    return checked(client.from('admin_log').insert({ actor:uid(),actor_name:profile.name || '',action:action,target:target || null,detail:detail || {} }));
   }
-
-  /* Pull the account map the console renders from. An admin needs every user,
-     an ordinary user only themselves - RLS decides, we just ask. */
-  function loadAccounts() {
-    if (!isOn()) return Promise.resolve(mirror.bb_accounts || {});
-    return ok(client.from('profiles').select('*').order('created', { ascending: false }).limit(1000))
-      .then(function (r) {
-        var map = {};
-        (r.data || []).forEach(function (row) { map[row.id] = toAccount(row); });
-        if (profile) map[profile.id] = toAccount(profile);
-        mirror.bb_accounts = map;
-        // Snapshot of what the server already has, so the first save after boot
-        // only pushes rows that genuinely changed.
-        var snap = {};
-        Object.keys(map).forEach(function (id) { snap[id] = clone(map[id]); });
-        mirror['bb_accounts:snapshot'] = snap;
-        return map;
-      })
-      .catch(function () { return mirror.bb_accounts || {}; });
-  }
-
-  /* admin-page.js still expects the app's own account shape. */
-  function toAccount(row) {
-    return {
-      uid: row.id,
-      code: row.code,
-      name: row.name || '',
-      email: row.email || '',
-      country: row.country || 'other',
-      created: row.created ? new Date(row.created).getTime() : 0,
-      loginAt: row.login_at ? new Date(row.login_at).getTime() : 0,
-      cash: Number(row.cash || 0),
-      funding: Number(row.funding || 0),
-      assets: row.assets || {},
-      kyc_status: row.kyc_status || 'none',
-      phone: row.phone || '',
-      phone_verified: !!row.phone_verified,
-      profitMode: !!row.profit_mode,
-      disabled: !!row.disabled,
-      admin: row.admin === true,
-      owner: row.is_owner === true,
-      perms: row.perms || {},
-      salt: null
-    };
-  }
-
-  function mirrorAccounts() {
-    var map = mirror.bb_accounts || {};
-    if (profile) map[profile.id] = toAccount(profile);
-    mirror.bb_accounts = map;
-  }
-
-  function audit(action, target, detail) {
-    if (!isOn() || !profile || !profile.admin) return Promise.resolve(false);
-    return client.from('admin_log').insert({
-      actor: uid(), actor_name: profile.name || '', action: action,
-      target: target || null, detail: detail || {}
-    }).then(ok);
-  }
-
-  function numv(v) { var n = parseFloat(v); return isFinite(n) ? n : null; }
-
-  /* ----------------------------------------------------------------- boot */
-  /* A silent fallback is the worst outcome: the site looks fine and nothing is
-     being saved. So when a database was configured but is not answering, say so
-     on the page instead of in the console only. */
   function warnBanner(text) {
-    if (!document.body) return;
-    if (document.getElementById('bbDbWarn')) return;
-    var el = document.createElement('div');
-    el.id = 'bbDbWarn';
-    el.setAttribute('role', 'alert');
-    el.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;' +
-      'display:flex;gap:10px;align-items:center;justify-content:space-between;' +
-      'padding:11px 14px;background:#3a1416;border-top:1px solid #7a2b31;' +
-      'color:#ffd9d9;font:12.5px/1.5 Inter,system-ui,sans-serif';
-    var msg = document.createElement('span');
-    msg.textContent = text;
-    var close = document.createElement('button');
-    close.textContent = 'Dismiss';
-    close.style.cssText = 'background:none;border:1px solid #7a2b31;color:#ffd9d9;' +
-      'border-radius:6px;padding:5px 10px;cursor:pointer;font:inherit';
-    close.addEventListener('click', function () { el.remove(); });
-    el.appendChild(msg);
-    el.appendChild(close);
-    document.body.appendChild(el);
+    if (!document.body) { document.addEventListener('DOMContentLoaded',function () { warnBanner(text); },{once:true}); return; }
+    var el=document.getElementById('bbDbWarn');
+    if (!el) {
+      el=document.createElement('div'); el.id='bbDbWarn'; el.setAttribute('role','alert');
+      el.style.cssText='position:fixed;left:0;right:0;bottom:0;z-index:99999;padding:12px;background:#3a1416;color:#ffd9d9;font:13px/1.5 system-ui;display:flex;gap:12px;justify-content:space-between';
+      el.appendChild(document.createElement('span'));
+      var retry=document.createElement('button'); retry.textContent='Retry';
+      retry.addEventListener('click',function () { (busy() ? flush() : refreshSession()).catch(report); });
+      el.appendChild(retry); document.body.appendChild(el);
+    }
+    el.firstChild.textContent=text;
   }
-
-  var ready = connect()
-    .then(function (res) { onSession(res); return ensureProfile(); })
-    .then(function () { return hydrate(); })
-    .then(function () {
-      status = 'ready';
-      return null;
-    })
-    .catch(function (err) {
-      lastError = (err && err.message) || String(err);
-      // No client at all means "not configured" - that is a deliberate mode and
-      // stays quiet. A client that exists but cannot reach the project is a
-      // misconfiguration and gets said out loud.
-      status = client ? 'error' : 'local';
-      if (client) {
-        if (global.console && console.warn) console.warn('[bitbase-db]', lastError);
-        warnBanner('Database not connected - nothing you do here will be saved. ' + lastError);
-      }
-      return null;
-    })
-    .then(function () {
-      // Keep the session live across tabs and refreshes.
-      if (client) client.auth.onAuthStateChange(function (next) { onSession(next); });
-      return null;
+  async function loadSdk() {
+    if (global.supabase && global.supabase.createClient) return;
+    await new Promise(function (resolve,reject) {
+      var script=document.createElement('script');
+      var timer=setTimeout(function () { reject(new Error('Sign-in service took too long to load. Check your connection and reload.')); },15000);
+      script.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js';
+      script.onload=function () { clearTimeout(timer); global.supabase ? resolve() : reject(new Error('Supabase SDK is unavailable.')); };
+      script.onerror=function () { clearTimeout(timer); reject(new Error('Could not load the sign-in service. Reload and try again.')); };
+      document.head.appendChild(script);
     });
-
-  /* --------------------------------------------------------------- exports */
-  global.BitbaseDB = {
-    MAP: MAP,
-    status: function () { return status; },
-    error: function () { return lastError; },
-    isOn: isOn,
-    uid: uid,
-    profile: function () { return profile; },
-    mirror: mirror,
-    ready: ready,
-    hydrate: hydrate,
-    loadAccounts: loadAccounts,
-    saveProfile: saveProfile,
-    saveProfileFor: saveProfileFor,
-    deleteAccountFor: deleteAccountFor,
-    refreshSession: refreshSession,
-    ensureProfile: ensureProfile,
-    profileError: function () { return profileError; },
-    audit: audit,
-    toAccount: toAccount,
-    /* Queue a key for the database. Debounced so a screen that saves five rows
-       in a row sends one batch, and failures are retried on the next save. */
-    persist: function (key) {
-      var spec = MAP[key];
-      if (!spec || !isOn() || !profile) return;
-      if (spec.admin && !profile.admin) return;
-      if (pending[key]) clearTimeout(pending[key]);
-      pending[key] = setTimeout(function () {
-        delete pending[key];
-        persist(key).catch(function () { /* reported through BB.error */ });
-      }, 220);
-    },
-    /* Force everything pending out now - used on unload and after login. */
-    flush: function () {
-      Object.keys(pending).forEach(function (key) {
-        clearTimeout(pending[key]);
-        delete pending[key];
-      });
-      return ready;
-    },
-    client: function () { return client; }
-  };
+  }
+  var ready=(async function () {
+    if (!configured) { status='local'; return; }
+    var url=String(CFG.supabaseUrl || '').trim().replace(/\/+$/,'').replace(/\/(rest|auth)\/v1$/i,'');
+    if (!url || !CFG.supabaseAnonKey) throw new Error('Supabase connection settings are missing.');
+    await loadSdk();
+    // Bound network waits so a broken connection cannot leave the login spinner stuck.
+    client=global.supabase.createClient(url,CFG.supabaseAnonKey,{global:{fetch:async function (url,options) {
+      var controller=new AbortController(), original=options && options.signal;
+      var cancel=function () { controller.abort(); };
+      if (original) { if (original.aborted) cancel(); else original.addEventListener('abort',cancel,{once:true}); }
+      var timer=setTimeout(cancel,15000);
+      try { return await fetch(url,Object.assign({},options,{signal:controller.signal})); }
+      finally { clearTimeout(timer); if (original) original.removeEventListener('abort',cancel); }
+    }}});
+    client.auth.onAuthStateChange(function (event,next) {
+      // Supabase calls this under its auth lock: never await another auth call here.
+      var old=uid(); acceptSession(next);
+      if (event==='SIGNED_OUT') { status='ready'; emit('bitbase:session',{signedIn:false}); return; }
+      if (next && (old!==uid() || !profile || event==='USER_UPDATED')) {
+        clearTimeout(authTimer);
+        authTimer=setTimeout(function () { refreshSession().catch(report); },0);
+      }
+    });
+    await refreshSession(); status='ready';
+  })().catch(function (e) { status='error'; report(e); });
+  global.addEventListener('online',function () { (busy() ? flush() : refresh()).catch(function () {}); });
+  global.addEventListener('focus',scheduleRefresh);
+  document.addEventListener('visibilitychange',function () { if (!document.hidden) scheduleRefresh(); });
+  global.addEventListener('beforeunload',function (e) { if (busy()) { e.preventDefault(); e.returnValue=''; } });
+  setInterval(function () { if (!document.hidden && isOn()) scheduleRefresh(); },4000);
+  global.BitbaseDB={ MAP:MAP, mirror:mirror, ready:ready, configured:function () { return configured; },
+    status:function () { return status; }, error:function () { return lastError; }, isOn:isOn, uid:uid,
+    profile:function () { return profile; }, profileError:function () { return profileError; },
+    client:function () { return client; }, toAccount:toAccount, hydrate:refresh, refresh:refresh,
+    refreshSession:refreshSession, ensureProfile:ensureProfile, loadAccounts:loadAccounts,
+    persist:queue, flush:flush, hasPending:busy, realtime:function () { return live; },
+    saveProfileFor:saveProfileFor, saveProfile:function (patch) { return saveProfileFor(uid(),patch); },
+    deleteAccountFor:deleteAccountFor, audit:audit, warn:report };
 })(window);

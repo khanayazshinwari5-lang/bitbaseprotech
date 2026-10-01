@@ -6,11 +6,12 @@
 (function (global) {
   'use strict';
 
+  var A = global.BitbaseAuth;
   var F = global.BitbaseFeed;
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
 
-  if (!global.BitbaseShell.mount({ active: 'markets' })) return;
+
 
   var state = { tab: 'crypto', rows: [], cells: {}, query: '', stale: false, staleNote: null };
 
@@ -270,6 +271,7 @@
   }
 
   function boot() {
+  if (!global.BitbaseShell.mount({ active: 'markets' })) return;
     badge('connecting');
 
     $$('.tab-btn[data-tab]').forEach(function (t) {

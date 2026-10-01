@@ -12,7 +12,7 @@
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
 
-  if (!global.BitbaseShell.mount({ active: 'assets' })) return;
+
 
   var HIDDEN_KEY = 'bb_assets_hide_zero';
   var DEPOSIT_KEY = 'bb_deposit_addresses';
@@ -320,10 +320,11 @@
       btn.disabled = true;
       $('#depositSpinner').style.display = 'inline-block';
 
-      setTimeout(function () {
+      setTimeout(async function () {
         try {
           // Deposits are a request: nothing is credited until an admin approves
           // it, so the console controls when funds actually land.
+          if (!btn.dataset.pendingSave) {
           var uid = A.get(A.KEYS.uid, '');
           A.activity.add('deposit', {
             amount: amt, coin: sym, usd: amt * priceOf(sym),
@@ -331,6 +332,10 @@
             method: 'address', network: m.net, proof: proofData || (proof ? proof.name : null),
             status: 'pending'
           });
+            btn.dataset.pendingSave = '1';
+          }
+          await A.flush();
+          delete btn.dataset.pendingSave;
           toast('Deposit submitted for review');
           $('#depositAmount').value = '';
           proof = null;
@@ -341,7 +346,7 @@
           render();
         } catch (e) {
           console.error('deposit submit failed', e);
-          setErr('#depositError', 'Could not submit the deposit. Please retry.');
+          setErr('#depositError', 'Deposit is not confirmed as saved. Use Retry in the connection notice; do not submit it again.');
         } finally {
           btn.disabled = false;
           $('#depositSpinner').style.display = 'none';
@@ -388,15 +393,20 @@
       var btn = $('#withdrawSubmitBtn');
       btn.disabled = true;
       $('#withdrawSpinner').style.display = 'inline-block';
-      setTimeout(function () {
+      setTimeout(async function () {
         try {
           // A withdrawal is a request too. The amount plus fee is held now so
           // it cannot be spent twice, and released again if it is rejected.
+          if (!btn.dataset.pendingSave) {
           setCoinQty(sym, coinQty(sym) - amt - fee);
           A.activity.add('withdrawal', {
             amount: amt, usd: amt * priceOf(sym), coin: sym,
             address: addr, fee: fee, network: net, status: 'pending'
           });
+            btn.dataset.pendingSave = '1';
+          }
+          await A.flush();
+          delete btn.dataset.pendingSave;
           toast('Withdrawal submitted for review');
           $('#withdrawAmount').value = '';
           $('#withdrawAddress').value = '';
@@ -404,7 +414,7 @@
           render();
         } catch (e) {
           console.error('withdraw submit failed', e);
-          setErr('#withdrawError', 'Withdrawal failed. Please retry.');
+          setErr('#withdrawError', 'Withdrawal is not confirmed as saved. Use Retry in the connection notice; do not submit it again.');
         } finally {
           btn.disabled = false;
           $('#withdrawSpinner').style.display = 'none';
@@ -466,7 +476,7 @@
       var btn = $('#transferSubmitBtn');
       btn.disabled = true;
       $('#transferSpinner').style.display = 'inline-block';
-      setTimeout(function () {
+      setTimeout(async function () {
         try {
           if (from.value === 'funding') {
             setFunding(funding() - amt);
@@ -547,7 +557,7 @@
       var btn = $('#convertSubmitBtn');
       btn.disabled = true;
       $('#convertSpinner').style.display = 'inline-block';
-      setTimeout(function () {
+      setTimeout(async function () {
         try {
           var got = a * r;
           setCoinQty(f, coinQty(f) - a);
@@ -649,16 +659,21 @@
       var btn = $('#loanSubmitBtn');
       btn.disabled = true;
       $('#loanSpinner').style.display = 'inline-block';
-      setTimeout(function () {
+      setTimeout(async function () {
         try {
           // Loans are a request as well: the funds are only credited once an
           // admin approves the application.
+          if (!btn.dataset.pendingSave) {
           var interest = amt * S.loan.rate * (S.loan.days / 365);
           A.activity.add('borrow', {
             amount: amt, interest: interest, days: S.loan.days,
             due: Date.now() + S.loan.days * 86400000, rate: S.loan.rate,
             proof: loanProof, status: 'pending'
           });
+            btn.dataset.pendingSave = '1';
+          }
+          await A.flush();
+          delete btn.dataset.pendingSave;
           toast('Loan application submitted for review');
           $('#loanBorrowAmt').value = '';
           $('#loanAgreeCheck').checked = false;
@@ -666,7 +681,7 @@
           render();
         } catch (e) {
           console.error('loan submit failed', e);
-          setErr('#loanError', 'Could not submit the loan. Please retry.');
+          setErr('#loanError', 'Loan is not confirmed as saved. Use Retry in the connection notice; do not submit it again.');
         } finally {
           btn.disabled = false;
           $('#loanSpinner').style.display = 'none';
@@ -722,7 +737,7 @@
     /* Pictures are downscaled before they are written. The whole thread lives
        in localStorage, and a modern phone photo base64-encoded would eat the
        quota on its own, so anything over 1000px is re-encoded as a modest JPEG.
-       Nothing is uploaded anywhere - there is no server in this build. */
+       Compressed pictures are saved with the message in Supabase. */
     var MAX_EDGE = 1000;
 
     function shrink(src) {
@@ -887,12 +902,17 @@
 
     /* One click, one message. Nothing is added on the user's behalf, so the
        thread contains only what people actually typed or attached. */
-    function send() {
-      var input = $('#supportInput');
+    async function send() {
+      var input = $('#supportInput'), button = $('#supportSend');
       var v = String(input.value || '').trim();
-      if (!v) return;
+      if (!v || button.disabled) return;
+      button.disabled = true;
+      if (!pushUserMessage(v)) { button.disabled = false; notice('Could not queue your message.'); return; }
       input.value = '';
-      if (pushUserMessage(v)) paint();
+      paint(); notice('Sending message…');
+      try { await A.flush(); paint(); }
+      catch (e) { notice('Message not delivered yet. Use Retry in the connection notice to send the saved message.'); }
+      finally { button.disabled = false; }
     }
     $('#supportSend').addEventListener('click', send);
     $('#supportInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') send(); });
@@ -915,14 +935,16 @@
         }
         var reader = new FileReader();
         reader.onload = function () {
-          shrink(reader.result).then(function (dataUrl) {
+          shrink(reader.result).then(async function (dataUrl) {
             var caption = String($('#supportInput').value || '').trim();
             $('#supportInput').value = '';
             if (!pushUserMessage(caption, dataUrl)) {
               notice('That picture was too large to save. Try a smaller image.');
               return;
             }
-            paint();
+            paint(); notice('Sending picture…');
+            try { await A.flush(); paint(); }
+            catch (e) { notice('Picture not delivered yet. Use Retry in the connection notice.'); }
           }).catch(function () {
             notice('That picture could not be read.');
           });
@@ -933,16 +955,20 @@
     }
 
     paint();
-    // Agent replies are written by the console into the same browser store, so
-    // a short poll is enough to pull them into an open panel.
-    setInterval(function () {
-      if (panel.style.display !== 'flex') return;
-      if (signature() !== lastSig) paint();
-    }, 3000);
+    // Database events update the open panel without replacing the input draft.
+    global.addEventListener('bitbase:data', function () {
+      if (panel.style.display === 'flex' && signature() !== lastSig) paint();
+    });
+    global.addEventListener('bitbase:saved', function () { if (panel.style.display === 'flex') paint(); });
+    // Local demo tabs have no database channel.
+    if (!A.isRemote()) setInterval(function () {
+      if (panel.style.display === 'flex' && signature() !== lastSig) paint();
+    }, 1000);
   }
 
   /* --------------------------------------------------------------- boot */
   function boot() {
+  if (!global.BitbaseShell.mount({ active: 'assets' })) return;
     S.hideZero = A.get(HIDDEN_KEY, '0') === '1';
     var t = $('#hideZeroToggle');
     if (t) {
@@ -986,6 +1012,7 @@
     initConvert();
     initLoan();
     initSupport();
+    global.addEventListener('bitbase:data', render);
 
     render();
 
