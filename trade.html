@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Futures Contract | BitBase</title>
+  <meta name="description" content="Trade crypto with duration contracts on live exchange prices.">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="assets/css/app.css">
+  <link rel="stylesheet" href="assets/css/pages.css">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: { extend: {
+        colors: { dark: '#0f0f0f', 'dark-card': '#1a1a1a', 'dark-border': '#2a2a2a', accent: '#f7931a', 'accent-hover': '#e88417' },
+        fontFamily: { heading: ['Space Grotesk', 'sans-serif'], body: ['Inter', 'sans-serif'], mono: ['IBM Plex Mono', 'monospace'] }
+      } }
+    }
+  </script>
+  <style>
+    [data-theme="light"] { --bg-primary:#f5f5f5; --bg-secondary:#fff; --bg-tertiary:#e8e8e8; --bg-glass:rgba(255,255,255,.92); --text-primary:#1a1a1a; --text-secondary:#555; --text-tertiary:#999; --border-subtle:rgba(0,0,0,.06); --border-medium:rgba(0,0,0,.1); --border-glow:rgba(247,147,26,.4); }
+    [data-theme="light"] body, [data-theme="light"] .page-body { background:#f5f5f5; color:#1a1a1a; }
+    [data-theme="light"] .dash-header { background:rgba(255,255,255,.9); }
+  </style>
+</head>
+<body class="page-body" data-mode="real">
+<script>
+(function(){
+  try {
+    var p = JSON.parse(localStorage.getItem('bb_preferences'));
+    if (p && p.theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
+  } catch(e) {}
+})();
+</script>
+
+<header class="dash-header" id="shellHeader">
+  <div class="dash-header-inner"></div>
+</header>
+
+<div id="mobileNav" class="mobile-nav-overlay">
+  <div class="mobile-nav"></div>
+</div>
+
+<div class="trade-var">
+  <div class="top-nav" id="tradeTopNav" style="top:60px;">
+    <div class="nav-left">
+      <button class="nav-back" onclick="history.back()" aria-label="Back"><i data-lucide="arrow-left" style="width:18px;height:18px;"></i></button>
+      <span class="nav-label">Futures contract</span>
+      <div class="pair-dd">
+        <button class="pair-btn" id="pairBtn">
+          <span id="pairText">BTC/USDT</span>
+          <i data-lucide="chevron-down" style="width:14px;height:14px;color:var(--t3);"></i>
+        </button>
+        <div id="pairDD" style="display:none;position:absolute;top:calc(100% + 6px);left:0;background:var(--bg3);border:1px solid var(--tborder2);border-radius:10px;padding:6px;min-width:200px;max-height:360px;overflow-y:auto;z-index:200;box-shadow:0 12px 40px rgba(0,0,0,0.6);"></div>
+      </div>
+      <span class="demo-badge" style="background:rgba(247,147,26,.12);color:var(--taccent);border-color:rgba(247,147,26,.25);">Futures</span>
+    </div>
+    <div class="nav-center">
+      <div class="nav-stat"><div class="label">Vol</div><div class="value" id="navVol">&mdash;</div></div>
+      <div class="nav-stat"><div class="label">24h Chg</div><div class="value mb-green" id="navChg">&mdash;</div></div>
+      <div class="nav-stat"><div class="label">Latest</div><div class="value" id="navLatest">&mdash;</div></div>
+      <div class="nav-stat"><div class="label">24H L</div><div class="value" id="navLow">&mdash;</div></div>
+      <div class="nav-stat"><div class="label">24H H</div><div class="value" id="navHigh">&mdash;</div></div>
+    </div>
+    <div class="nav-right" id="tfPicker"></div>
+  </div>
+
+  <div class="trading-layout" id="tradingLayout">
+    <div class="trading-main">
+      <div class="market-bar">
+        <div class="mb-item"><div class="mb-label">O</div><div class="mb-val" id="mbO">&mdash;</div></div>
+        <div class="mb-item"><div class="mb-label">H</div><div class="mb-val" id="mbH">&mdash;</div></div>
+        <div class="mb-item"><div class="mb-label">L</div><div class="mb-val" id="mbL">&mdash;</div></div>
+        <div class="mb-item"><div class="mb-label">C</div><div class="mb-val" id="mbC">&mdash;</div></div>
+        <div class="mb-item"><span class="mb-pct" id="mbPct">&mdash;</span></div>
+        <div style="margin-left:auto;display:flex;align-items:center;gap:10px;">
+          <span id="chartSource" style="font-size:10px;color:var(--t3);letter-spacing:.02em;"></span>
+          <div style="display:flex;align-items:center;gap:4px;">
+            <div class="live-dot"></div>
+            <span style="font-size:11px;color:var(--green);font-weight:600;">Live</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="chart-wrap">
+        <div class="chart-canvas-host" id="chartHost">
+          <canvas id="tradeChart"></canvas>
+          <div id="chartLoader" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:10px;color:var(--t3);font-size:13px;">
+            <div style="width:16px;height:16px;border:2px solid #f7931a;border-top-color:transparent;border-radius:50%;animation:tsp .7s linear infinite;"></div>
+            Loading candles...
+          </div>
+        </div>
+      </div>
+
+      <div class="positions-section">
+        <div class="positions-header">
+          <div style="display:flex;align-items:center;">
+            <h3>Open Positions</h3>
+            <span class="positions-count" id="posCount">0</span>
+          </div>
+        </div>
+        <div class="pos-table">
+          <table>
+            <thead><tr>
+              <th>Trade ID</th><th>Pair</th><th>Direction</th><th>Amount</th>
+              <th>Duration</th><th>Time Left</th><th>Potential Profit</th><th>Status</th><th>Action</th>
+            </tr></thead>
+            <tbody id="posBody">
+              <tr><td colspan="9" class="pos-empty">No open positions</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="trading-panel">
+      <div class="tp-section">
+        <div class="tp-label">Latest Price</div>
+        <div class="latest-price-label">Latest price <span id="tpPrice">&mdash;</span></div>
+        <div class="latest-price-big" id="tpPriceBig">&mdash;</div>
+      </div>
+
+      <div class="tp-section">
+        <div class="tp-label">Latest Transaction</div>
+        <div style="display:flex;gap:16px;font-size:10px;color:var(--t3);margin-bottom:4px;">
+          <span>Time</span><span style="margin-left:auto;">Price</span><span style="margin-left:auto;">Amount</span>
+        </div>
+        <div class="tx-list" id="txList">
+          <div style="text-align:center;padding:8px;font-size:12px;color:var(--t3);">No recent trades</div>
+        </div>
+      </div>
+
+      <div class="tp-section">
+        <div class="tp-label">Account: Available</div>
+        <div class="balance-amount">$<span id="balance">0.00</span> <span style="font-size:14px;color:var(--t3);font-weight:400;">USDT</span></div>
+      </div>
+
+      <div class="tp-section">
+        <div class="tp-label">Trade Duration</div>
+        <select class="dur-select" id="durSelect">
+          <option value="15" data-profit="10">15s &middot; 10%</option>
+          <option value="30" data-profit="15">30s &middot; 15%</option>
+          <option value="60" data-profit="20">60s &middot; 20%</option>
+          <option value="300" data-profit="30">5m &middot; 30%</option>
+          <option value="900" data-profit="40">15m &middot; 40%</option>
+          <option value="1800" data-profit="50">30m &middot; 50%</option>
+          <option value="3600" data-profit="60">1h &middot; 60%</option>
+          <option value="7200" data-profit="70">2h &middot; 70%</option>
+          <option value="14400" data-profit="80">4h &middot; 80%</option>
+          <option value="43200" data-profit="90">12h &middot; 90%</option>
+          <option value="86400" data-profit="100">24h &middot; 100%</option>
+        </select>
+      </div>
+
+      <div class="tp-section">
+        <div class="tp-label">Amount (USD)</div>
+        <input type="text" class="amt-input" id="amtInput" placeholder="Enter amount" inputmode="decimal">
+        <div class="pct-btns">
+          <button class="pct-btn" data-pct="25">25%</button>
+          <button class="pct-btn" data-pct="50">50%</button>
+          <button class="pct-btn" data-pct="75">75%</button>
+          <button class="pct-btn" data-pct="100">100%</button>
+        </div>
+      </div>
+
+      <div class="tp-section">
+        <div class="summary-card">
+          <div class="summary-row"><span class="sr-label">Trade Amount</span><span class="sr-val" id="sumAmt">&mdash;</span></div>
+          <div class="summary-row"><span class="sr-label">Duration</span><span class="sr-val" id="sumDur">&mdash;</span></div>
+          <div class="summary-row"><span class="sr-label">Potential Profit</span><span class="sr-val" id="sumProfit" style="color:var(--green);">&mdash;</span></div>
+        </div>
+      </div>
+
+      <div class="tp-section">
+        <div class="trade-btns">
+          <button class="btn-up" id="btnUp">BUY / UP &#8593;&#8593;</button>
+          <button class="btn-down" id="btnDown">SELL / DOWN &#8595;</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="mobile-bottom-bar" id="shellBottom"></div>
+
+<script src="assets/js/auth.js"></script>
+<script src="assets/js/data.js"></script>
+<script src="assets/js/chart.js"></script>
+<script src="assets/js/shell.js"></script>
+<script src="assets/js/trade-page.js"></script>
+</body>
+</html>

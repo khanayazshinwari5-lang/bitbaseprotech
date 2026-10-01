@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bitbase – Dashboard</title>
+  <meta name="description" content="Your Bitbase portfolio: live balances, holdings and P&amp;L.">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="assets/css/app.css">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            dark: '#0f0f0f',
+            'dark-card': '#1a1a1a',
+            'dark-border': '#2a2a2a',
+            accent: '#f7931a',
+            'accent-hover': '#e88417',
+          },
+          fontFamily: {
+            heading: ['Space Grotesk', 'sans-serif'],
+            body: ['Inter', 'sans-serif'],
+            mono: ['IBM Plex Mono', 'monospace'],
+          },
+        }
+      }
+    }
+  </script>
+  <style>
+    [data-theme="light"] { --bg-primary:#f5f5f5; --bg-secondary:#fff; --bg-tertiary:#e8e8e8; --bg-glass:rgba(255,255,255,0.92); --text-primary:#1a1a1a; --text-secondary:#555; --text-tertiary:#999; --border-subtle:rgba(0,0,0,0.06); --border-medium:rgba(0,0,0,0.1); }
+    [data-theme="light"] body, [data-theme="light"] .page-body { background:#f5f5f5; color:#1a1a1a; }
+    [data-theme="light"] .glass-card { background:#fff; border-color:rgba(0,0,0,0.1); }
+    [data-theme="light"] .dash-header { background:rgba(255,255,255,0.9); }
+    [data-theme="light"] .user-pill, [data-theme="light"] .tab-btn { background:rgba(0,0,0,0.03); }
+    [data-theme="light"] .dash-nav a:hover, [data-theme="light"] .mobile-bottom-bar a:hover { background:rgba(0,0,0,0.04); }
+  </style>
+</head>
+<body class="page-body">
+
+<header class="dash-header" id="shellHeader">
+  <div class="dash-header-inner"></div>
+</header>
+
+<div id="mobileNav" class="mobile-nav-overlay">
+  <div class="mobile-nav"></div>
+</div>
+
+<div class="page-content">
+
+  <!-- Page Header -->
+  <div class="mb-8">
+    <h1 class="font-heading text-3xl font-bold mb-1">Dashboard</h1>
+    <p class="text-secondary">Welcome back, <span id="dashUserName">User</span></p>
+  </div>
+
+  <!-- Quick Stats Row -->
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-4 mb-8">
+    <div class="glass-card rounded-xl p-3 sm:p-6">
+      <div class="text-[10px] sm:text-sm text-secondary mb-1 sm:mb-2">Total Balance</div>
+      <div class="font-mono text-sm sm:text-2xl font-bold gradient-text mb-0.5" id="statTotalBalance">—</div>
+      <div class="text-[10px] sm:text-sm" id="statTotalChange" style="color:var(--accent-green);">—</div>
+    </div>
+    <div class="glass-card rounded-xl p-3 sm:p-6">
+      <div class="text-[10px] sm:text-sm text-secondary mb-1 sm:mb-2">Total P&amp;L</div>
+      <div class="font-mono text-sm sm:text-2xl font-bold mb-0.5" id="statPnL" style="color:var(--accent-green);">—</div>
+      <div class="text-[10px] sm:text-sm text-secondary">From trades</div>
+    </div>
+    <div class="glass-card rounded-xl p-3 sm:p-6">
+      <div class="text-[10px] sm:text-sm text-secondary mb-1 sm:mb-2">Available Balance</div>
+      <div class="font-mono text-sm sm:text-2xl font-bold mb-0.5" id="statAvailable">—</div>
+      <div class="text-[10px] sm:text-sm text-secondary">Available to trade</div>
+    </div>
+    <div class="glass-card rounded-xl p-3 sm:p-6">
+      <div class="text-[10px] sm:text-sm text-secondary mb-1 sm:mb-2">Holdings Value</div>
+      <div class="font-mono text-sm sm:text-2xl font-bold mb-0.5" id="statHoldings" style="color:var(--accent-orange);">—</div>
+      <div class="text-[10px] sm:text-sm text-secondary" id="statHoldingsCount">In crypto</div>
+    </div>
+  </div>
+
+  <!-- Portfolio Chart Area -->
+  <div class="glass-card rounded-xl p-6 mb-8">
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between mb-6 gap-4">
+      <h2 class="font-heading font-semibold text-lg">Portfolio Overview</h2>
+      <div class="flex gap-1 overflow-x-auto" id="periodTabs">
+        <button class="tab-btn" data-period="24H" onclick="switchPeriod('24H',this)">24H</button>
+        <button class="tab-btn" data-period="7D" onclick="switchPeriod('7D',this)">7D</button>
+        <button class="tab-btn active" data-period="1M" onclick="switchPeriod('1M',this)">1M</button>
+        <button class="tab-btn" data-period="3M" onclick="switchPeriod('3M',this)">3M</button>
+        <button class="tab-btn" data-period="1Y" onclick="switchPeriod('1Y',this)">1Y</button>
+        <button class="tab-btn" data-period="ALL" onclick="switchPeriod('ALL',this)">ALL</button>
+      </div>
+    </div>
+    <div style="position:relative;height:300px;border-radius:12px;overflow:hidden;background:linear-gradient(180deg,rgba(247,147,26,0.08) 0%,rgba(247,147,26,0.02) 100%);">
+      <svg id="portfolioChart" width="100%" height="100%" viewBox="0 0 800 300" preserveAspectRatio="none" style="position:absolute;inset:0;"></svg>
+      <div id="chartEmpty" class="hidden" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center;padding:20px;">
+        <i data-lucide="wallet" style="width:26px;height:26px;color:#5c5c5c;"></i>
+        <div style="color:#8a8a8a;font-size:14px;">No portfolio value to chart yet.</div>
+        <a href="assets.html" id="chartEmptyBtn" class="btn-secondary text-sm font-semibold px-5" style="height:38px;display:inline-flex;align-items:center;">Deposit funds</a>
+      </div>
+      <div id="chartLoader" class="hidden" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:10px;color:#8a8a8a;font-size:13px;">
+        <div class="w-4 h-4 border-2 border-accent-orange border-t-transparent rounded-full animate-spin"></div>
+        Loading history…
+      </div>
+      <div id="chartValueBox" style="position:absolute;top:16px;right:16px;">
+        <div class="font-mono text-sm font-bold" style="color:var(--accent-orange);" id="chartValue">—</div>
+        <div class="font-mono text-xs mt-1" id="chartChange" style="color:var(--accent-green);">—</div>
+      </div>
+    </div>
+    <p class="text-[11px] mt-3" style="color:var(--text-tertiary);" id="chartSource">
+      Portfolio value over time, re-priced with historical exchange closes for your current holdings.
+    </p>
+  </div>
+
+  <!-- Assets + Activity Grid -->
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+
+    <!-- Your Assets -->
+    <div class="lg:col-span-2 glass-card rounded-xl p-6" id="holdings">
+      <h2 class="font-heading font-semibold text-lg mb-5">Your Assets</h2>
+      <div id="holdingsList"></div>
+    </div>
+
+    <!-- Recent Activity -->
+    <div class="glass-card rounded-xl p-6" id="activity">
+      <h2 class="font-heading font-semibold text-lg mb-5">Recent Activity</h2>
+      <div id="recentActivityList"></div>
+      <div class="mt-4 pt-4" style="border-top:1px solid var(--border-subtle);">
+        <a href="dashboard.html#activity" class="text-sm font-medium" style="color:var(--accent-orange);">View All →</a>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Quick Actions -->
+  <div class="flex flex-wrap gap-3 mb-8">
+    <a href="assets.html" class="btn-secondary px-6 py-3 rounded-xl text-sm font-semibold" id="depositBtn2" style="display:inline-flex;align-items:center;">Deposit</a>
+    <a href="index.html#terminal" class="btn-secondary px-6 py-3 rounded-xl text-sm font-semibold">Open Trading Terminal</a>
+    <button type="button" class="btn-secondary px-6 py-3 rounded-xl text-sm font-semibold" id="logoutBtn" style="color:var(--accent-red);">Sign Out</button>
+  </div>
+
+</div>
+
+<div class="mobile-bottom-bar" id="shellBottom"></div>
+
+<script src="assets/js/auth.js"></script>
+<script src="assets/js/data.js"></script>
+<script src="assets/js/shell.js"></script>
+<script src="assets/js/dashboard.js"></script>
+</body>
+</html>

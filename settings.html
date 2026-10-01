@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bitbase &ndash; Settings</title>
+  <meta name="description" content="Profile, security, notifications, preferences and verification.">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="assets/css/app.css">
+  <link rel="stylesheet" href="assets/css/pages.css">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: { extend: {
+        colors: { dark: '#0f0f0f', 'dark-card': '#1a1a1a', 'dark-border': '#2a2a2a', accent: '#f7931a', 'accent-hover': '#e88417' },
+        fontFamily: { heading: ['Space Grotesk', 'sans-serif'], body: ['Inter', 'sans-serif'], mono: ['IBM Plex Mono', 'monospace'] }
+      } }
+    }
+  </script>
+  <style>
+    [data-theme="light"] { --bg-primary:#f5f5f5; --bg-secondary:#fff; --bg-tertiary:#e8e8e8; --bg-glass:rgba(255,255,255,.92); --text-primary:#1a1a1a; --text-secondary:#555; --text-tertiary:#999; --border-subtle:rgba(0,0,0,.06); --border-medium:rgba(0,0,0,.1); --border-glow:rgba(247,147,26,.4); }
+    [data-theme="light"] body, [data-theme="light"] .page-body { background:#f5f5f5; color:#1a1a1a; }
+    [data-theme="light"] .dash-header { background:rgba(255,255,255,.9); }
+    [data-theme="light"] .glass-card { background:#fff; border-color:rgba(0,0,0,.1); }
+    [data-theme="light"] .input-field { background:#f0f0f0; border-color:rgba(0,0,0,.1); color:#1a1a1a; }
+    [data-theme="light"] .btn-secondary { background:#e8e8e8; border-color:rgba(0,0,0,.1); color:#1a1a1a; }
+    @keyframes tsp { to { transform: rotate(360deg) } }
+  </style>
+</head>
+<body class="page-body">
+<script>
+(function(){
+  try {
+    var p = JSON.parse(localStorage.getItem('bb_preferences'));
+    if (p && p.theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
+  } catch(e) {}
+})();
+</script>
+
+<header class="dash-header" id="shellHeader">
+  <div class="dash-header-inner"></div>
+</header>
+
+<div id="mobileNav" class="mobile-nav-overlay">
+  <div class="mobile-nav"></div>
+</div>
+
+<div class="page-content">
+
+  <div class="mb-8">
+    <h1 class="font-heading text-3xl font-bold mb-1">Settings</h1>
+    <p class="text-secondary">Manage your account preferences</p>
+  </div>
+
+  <div class="flex flex-col lg:flex-row gap-6">
+
+    <div id="settingsSidebar" class="lg:w-64 flex-shrink-0 settings-sidebar" style="position:sticky;top:80px;align-self:flex-start;">
+      <div class="glass-card rounded-xl p-2 flex flex-col gap-1" id="settingsTabs">
+        <button class="settings-tab-btn active" data-settings-tab="profile"><i data-lucide="user"></i>Profile</button>
+        <button class="settings-tab-btn" data-settings-tab="security"><i data-lucide="shield"></i>Security</button>
+        <button class="settings-tab-btn" data-settings-tab="notifications"><i data-lucide="bell"></i>Notifications</button>
+        <button class="settings-tab-btn" data-settings-tab="preferences"><i data-lucide="settings"></i>Preferences</button>
+        <button class="settings-tab-btn" data-settings-tab="verification"><i data-lucide="check-circle"></i>Verification</button>
+      </div>
+    </div>
+
+    <div class="flex-1 min-w-0">
+
+      <!-- PROFILE -->
+      <div id="settings-profile" class="settings-panel active">
+        <button class="settings-back-btn" id="settingsBack"><i data-lucide="arrow-left"></i>Back</button>
+        <div class="glass-card rounded-xl p-8">
+          <div class="flex items-center gap-5 mb-8">
+            <div id="profileAvatar" style="width:64px;height:64px;border-radius:16px;background:linear-gradient(135deg,#F7931A,#FDB022);display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700;color:#fff;">U</div>
+          </div>
+          <div class="flex flex-col gap-5">
+            <div>
+              <label class="input-label">Display Name</label>
+              <input type="text" class="input-field" id="settingsName" value="">
+            </div>
+            <div>
+              <label class="input-label">Email</label>
+              <div class="flex items-center gap-3">
+                <input type="email" class="input-field" id="settingsEmail" value="user@email.com" readonly style="flex:1;">
+                <span class="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium" style="background:rgba(22,199,132,0.1);color:var(--accent-green);">Verified &#10003;</span>
+              </div>
+            </div>
+            <div>
+              <label class="input-label">User ID (UID)</label>
+              <div class="flex items-center gap-3">
+                <input type="text" class="input-field" id="uidField" value="" readonly style="flex:1;font-family:'IBM Plex Mono',monospace;letter-spacing:0.15em;font-size:16px;font-weight:600;background:rgba(255,255,255,0.02);cursor:default;">
+                <button id="copyUidBtn" class="px-4 py-2.5 rounded-xl text-sm font-semibold transition-all" style="background:rgba(247,147,26,0.1);border:1px solid rgba(247,147,26,0.3);color:var(--accent-orange);white-space:nowrap;cursor:pointer;">
+                  <i data-lucide="copy" style="width:14px;height:14px;display:inline;vertical-align:middle;margin-right:4px;"></i>Copy
+                </button>
+              </div>
+              <p class="text-xs mt-1.5" style="color:var(--text-tertiary);">Your unique ID, assigned once when your account was created.</p>
+            </div>
+            <div>
+              <label class="input-label">Username</label>
+              <input type="text" class="input-field" id="settingsUsername" value="">
+            </div>
+            <div>
+              <label class="input-label">Phone</label>
+              <input type="tel" class="input-field" id="settingsPhone" value="">
+            </div>
+            <div>
+              <label class="input-label">Country</label>
+              <select class="input-field" id="settingsCountry" style="appearance:auto;">
+                <option value="us">United States</option>
+                <option value="uk">United Kingdom</option>
+                <option value="ca">Canada</option>
+                <option value="au">Australia</option>
+                <option value="de">Germany</option>
+                <option value="fr">France</option>
+                <option value="jp">Japan</option>
+                <option value="in">India</option>
+                <option value="br">Brazil</option>
+                <option value="ng">Nigeria</option>
+                <option value="sg">Singapore</option>
+                <option value="ae">United Arab Emirates</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+          </div>
+          <div class="flex gap-3 mt-8">
+            <button class="btn-primary rounded-xl px-6 py-3 text-sm font-semibold text-white" id="saveProfileBtn">Save Changes</button>
+            <button class="btn-secondary rounded-xl px-6 py-3 text-sm font-medium" id="cancelProfileBtn">Cancel</button>
+          </div>
+          <p id="profileSaved" class="hidden" style="margin-top:14px;color:#16c784;font-size:13px;">Profile updated.</p>
+        </div>
+      </div>
+
+      <!-- SECURITY -->
+      <div id="settings-security" class="settings-panel">
+        <button class="settings-back-btn" id="settingsBack2"><i data-lucide="arrow-left"></i>Back</button>
+        <div class="flex flex-col gap-6">
+          <div class="glass-card rounded-xl p-8">
+            <h3 class="font-heading font-semibold text-lg mb-5">Change Password</h3>
+            <div class="flex flex-col gap-4">
+              <div><label class="input-label">Current Password</label><input type="password" class="input-field" id="pwCurrent" placeholder="Enter current password" autocomplete="current-password"></div>
+              <div><label class="input-label">New Password</label><input type="password" class="input-field" id="pwNew" placeholder="Enter new password" autocomplete="new-password"></div>
+              <div><label class="input-label">Confirm New Password</label><input type="password" class="input-field" id="pwConfirm" placeholder="Confirm new password" autocomplete="new-password"></div>
+            </div>
+            <p id="pwError" class="hidden" style="margin-top:12px;color:#ea3943;font-size:13px;"></p>
+            <button class="btn-primary rounded-xl px-6 py-3 text-sm font-semibold text-white mt-5" id="updatePwBtn">Update Password</button>
+          </div>
+
+          <div class="glass-card rounded-xl p-8">
+            <h3 class="font-heading font-semibold text-lg mb-5">Login Activity</h3>
+            <div class="table-wrap">
+              <table class="w-full min-w-[560px]">
+                <thead><tr style="border-bottom:1px solid var(--border-subtle);">
+                  <th class="text-left text-xs font-medium uppercase tracking-wider pb-3" style="color:var(--text-tertiary);">IP Address</th>
+                  <th class="text-left text-xs font-medium uppercase tracking-wider pb-3" style="color:var(--text-tertiary);">Device</th>
+                  <th class="text-left text-xs font-medium uppercase tracking-wider pb-3" style="color:var(--text-tertiary);">Location</th>
+                  <th class="text-left text-xs font-medium uppercase tracking-wider pb-3" style="color:var(--text-tertiary);">Time</th>
+                </tr></thead>
+                <tbody id="loginActivityBody">
+                  <tr><td colspan="4" class="py-6 text-center text-sm text-secondary">Loading...</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <button class="mt-5 px-5 py-2.5 rounded-xl text-sm font-semibold" style="background:rgba(234,57,67,0.1);border:1px solid rgba(234,57,67,0.3);color:var(--accent-red);" id="logoutAllBtn">Logout All Devices</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- NOTIFICATIONS -->
+      <div id="settings-notifications" class="settings-panel">
+        <button class="settings-back-btn" id="settingsBack3"><i data-lucide="arrow-left"></i>Back</button>
+        <div class="glass-card rounded-xl p-8">
+          <h3 class="font-heading font-semibold text-lg mb-6">Notification Preferences</h3>
+          <div class="flex flex-col gap-5" id="notifyList"></div>
+        </div>
+      </div>
+
+      <!-- PREFERENCES -->
+      <div id="settings-preferences" class="settings-panel">
+        <button class="settings-back-btn" id="settingsBack4"><i data-lucide="arrow-left"></i>Back</button>
+        <div class="glass-card rounded-xl p-8">
+          <h3 class="font-heading font-semibold text-lg mb-6">Preferences</h3>
+          <div class="flex flex-col gap-5">
+            <div><label class="input-label">Language</label><select id="prefLanguage" class="input-field" style="appearance:auto;"><option>English</option><option>Spanish</option><option>French</option><option>German</option><option>Japanese</option></select></div>
+            <div><label class="input-label">Currency</label><select id="prefCurrency" class="input-field" style="appearance:auto;"><option>USD</option><option>EUR</option><option>GBP</option><option>JPY</option><option>AUD</option></select></div>
+            <div>
+              <label class="input-label">Theme</label>
+              <div class="flex gap-3" id="prefThemeGroup">
+                <div class="radio-option selected" data-value="dark" style="flex:1;">Dark</div>
+                <div class="radio-option" data-value="light" style="flex:1;">Light</div>
+              </div>
+            </div>
+            <div><label class="input-label">Timezone</label><select id="prefTimezone" class="input-field" style="appearance:auto;"><option>UTC</option><option>EST (UTC-5)</option><option>PST (UTC-8)</option><option>CET (UTC+1)</option><option>JST (UTC+9)</option></select></div>
+            <div>
+              <label class="input-label">Default Trading View</label>
+              <div class="flex gap-3" id="prefTradingViewGroup">
+                <div class="radio-option" data-value="basic" style="flex:1;">Basic</div>
+                <div class="radio-option selected" data-value="advanced" style="flex:1;">Advanced</div>
+              </div>
+            </div>
+          </div>
+          <button class="btn-primary rounded-xl px-6 py-3 text-sm font-semibold text-white mt-6" id="savePrefsBtn">Save Preferences</button>
+          <p id="prefsSaved" class="hidden" style="margin-top:14px;color:#16c784;font-size:13px;">Preferences saved.</p>
+        </div>
+      </div>
+
+      <!-- VERIFICATION -->
+      <div id="settings-verification" class="settings-panel">
+        <button class="settings-back-btn" id="settingsBack5"><i data-lucide="arrow-left"></i>Back</button>
+        <div class="glass-card rounded-xl p-8">
+          <h3 class="font-heading font-semibold text-lg mb-6">Identity Verification</h3>
+          <div class="flex flex-col gap-4">
+            <div class="flex items-center justify-between py-4" style="border-bottom:1px solid var(--border-subtle);">
+              <div class="flex items-center gap-3">
+                <div style="width:36px;height:36px;border-radius:50%;background:rgba(22,199,132,0.1);display:flex;align-items:center;justify-content:center;"><i data-lucide="check-circle" style="width:18px;height:18px;color:var(--accent-green);"></i></div>
+                <div><div class="text-sm font-medium">Email Verification</div><div class="text-xs" style="color:var(--text-tertiary);">Verified</div></div>
+              </div>
+              <span class="px-3 py-1 rounded-lg text-xs font-medium" style="background:rgba(22,199,132,0.1);color:var(--accent-green);">Complete</span>
+            </div>
+
+            <div class="flex items-center justify-between py-4" style="border-bottom:1px solid var(--border-subtle);">
+              <div class="flex items-center gap-3">
+                <div id="phoneVerifyIcon" style="width:36px;height:36px;border-radius:50%;background:rgba(247,147,26,0.1);display:flex;align-items:center;justify-content:center;"><i data-lucide="clock" style="width:18px;height:18px;color:var(--accent-orange);"></i></div>
+                <div><div class="text-sm font-medium">Phone Verification</div><div class="text-xs" id="phoneVerifyText" style="color:var(--text-tertiary);">Verify your phone number</div></div>
+              </div>
+              <button id="phoneVerifyBtn" class="px-4 py-1.5 rounded-lg text-xs font-semibold" style="background:rgba(247,147,26,0.1);border:1px solid rgba(247,147,26,0.3);color:var(--accent-orange);cursor:pointer;">Verify</button>
+            </div>
+
+            <div class="flex items-center justify-between py-4">
+              <div class="flex items-center gap-3">
+                <div id="kycIcon" style="width:36px;height:36px;border-radius:50%;background:rgba(247,147,26,0.1);display:flex;align-items:center;justify-content:center;"><i data-lucide="clock" style="width:18px;height:18px;color:var(--accent-orange);"></i></div>
+                <div><div class="text-sm font-medium">Identity Verification (KYC)</div><div class="text-xs" id="kycStatusText" style="color:var(--text-tertiary);">Required for higher limits</div></div>
+              </div>
+              <button id="kycStartBtn" class="px-4 py-1.5 rounded-lg text-xs font-semibold" style="background:rgba(247,147,26,0.1);border:1px solid rgba(247,147,26,0.3);color:var(--accent-orange);cursor:pointer;">Start</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="glass-card rounded-xl p-8 mt-6">
+          <h3 class="font-heading font-semibold text-lg mb-4">Verification Benefits</h3>
+          <div class="grid gap-4 md:grid-cols-2">
+            <div class="flex items-start gap-3">
+              <div style="width:32px;height:32px;border-radius:8px;background:rgba(22,199,132,0.1);display:flex;align-items:center;justify-content:center;flex-shrink:0;"><i data-lucide="trending-up" style="width:16px;height:16px;color:var(--accent-green);"></i></div>
+              <div><div class="text-sm font-medium">Higher Limits</div><div class="text-xs" style="color:var(--text-tertiary);">Up to $100,000 daily withdrawals</div></div>
+            </div>
+            <div class="flex items-start gap-3">
+              <div style="width:32px;height:32px;border-radius:8px;background:rgba(22,199,132,0.1);display:flex;align-items:center;justify-content:center;flex-shrink:0;"><i data-lucide="zap" style="width:16px;height:16px;color:var(--accent-green);"></i></div>
+              <div><div class="text-sm font-medium">Instant Transfers</div><div class="text-xs" style="color:var(--text-tertiary);">Faster peer-to-peer transactions</div></div>
+            </div>
+            <div class="flex items-start gap-3">
+              <div style="width:32px;height:32px;border-radius:8px;background:rgba(22,199,132,0.1);display:flex;align-items:center;justify-content:center;flex-shrink:0;"><i data-lucide="shield" style="width:16px;height:16px;color:var(--accent-green);"></i></div>
+              <div><div class="text-sm font-medium">Enhanced Security</div><div class="text-xs" style="color:var(--text-tertiary);">Account recovery &amp; fraud protection</div></div>
+            </div>
+            <div class="flex items-start gap-3">
+              <div style="width:32px;height:32px;border-radius:8px;background:rgba(22,199,132,0.1);display:flex;align-items:center;justify-content:center;flex-shrink:0;"><i data-lucide="credit-card" style="width:16px;height:16px;color:var(--accent-green);"></i></div>
+              <div><div class="text-sm font-medium">Fiat Gateway</div><div class="text-xs" style="color:var(--text-tertiary);">Buy crypto with credit/debit cards</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ===== PHONE VERIFICATION ===== -->
+<div class="modal-overlay" id="phoneVerifyModal">
+  <div class="modal-box" style="max-width:420px;">
+    <div class="modal-header">
+      <h3 style="font-size:16px;font-weight:600;">Verify Phone Number</h3>
+      <button id="phoneVerifyClose" style="background:none;border:none;color:var(--text-tertiary);cursor:pointer;" aria-label="Close"><i data-lucide="x" style="width:20px;height:20px;"></i></button>
+    </div>
+    <div class="modal-body">
+      <div id="phoneStep1">
+        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;">Enter your phone number to verify your account.</p>
+        <div class="field-group">
+          <label class="input-label">Phone Number</label>
+          <div style="display:flex;gap:8px;">
+            <select class="input-field" id="phoneCountryCode" style="width:130px;"></select>
+            <input type="tel" class="input-field" id="phoneInput" placeholder="555 123 4567" style="flex:1;">
+          </div>
+        </div>
+        <p id="phoneError" class="hidden" style="color:#ea3943;font-size:13px;margin-bottom:12px;"></p>
+        <button class="submit-btn" id="phoneSubmitBtn" style="background:linear-gradient(135deg,#F7931A,#FDB022);">Verify Phone Number</button>
+      </div>
+      <div id="phoneStep2" style="display:none;text-align:center;padding:20px 0;">
+        <div style="width:56px;height:56px;border-radius:50%;background:rgba(22,199,132,0.12);display:flex;align-items:center;justify-content:center;margin:0 auto 12px;">
+          <i data-lucide="check-circle" style="width:32px;height:32px;color:var(--accent-green);"></i>
+        </div>
+        <h4 style="font-size:16px;font-weight:700;margin-bottom:4px;">Phone Verified!</h4>
+        <p style="font-size:12px;color:var(--text-secondary);margin-bottom:16px;">Your phone number has been verified successfully.</p>
+        <button class="submit-btn" id="phoneDoneBtn" style="background:linear-gradient(135deg,#F7931A,#FDB022);">Done</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== KYC ===== -->
+<div class="modal-overlay" id="kycModal">
+  <div class="modal-box" style="max-width:560px;">
+    <div class="modal-header">
+      <h3 style="font-size:16px;font-weight:600;">Identity Verification</h3>
+      <button id="kycClose" style="background:none;border:none;color:var(--text-tertiary);cursor:pointer;" aria-label="Close"><i data-lucide="x" style="width:20px;height:20px;"></i></button>
+    </div>
+    <div class="modal-body">
+      <div id="kycProgress" style="display:flex;align-items:center;margin-bottom:28px;">
+        <div class="kyc-step-dot active" data-step="1">1</div>
+        <div class="kyc-step-line" id="kycLine1"></div>
+        <div class="kyc-step-dot" data-step="2">2</div>
+        <div class="kyc-step-line" id="kycLine2"></div>
+        <div class="kyc-step-dot" data-step="3">3</div>
+      </div>
+
+      <div id="kycStep1">
+        <h4 style="font-size:15px;font-weight:600;margin-bottom:4px;">Personal Information</h4>
+        <p style="font-size:12px;color:var(--text-tertiary);margin-bottom:20px;">Please provide your legal identity details</p>
+        <div style="display:flex;flex-direction:column;gap:14px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;" class="resp-2">
+            <div><label class="input-label">First Name</label><input type="text" class="input-field" id="kycFirstName" placeholder="John"></div>
+            <div><label class="input-label">Last Name</label><input type="text" class="input-field" id="kycLastName" placeholder="Doe"></div>
+          </div>
+          <div><label class="input-label">Date of Birth</label><input type="date" class="input-field" id="kycDOB"></div>
+          <div><label class="input-label">Nationality</label><select class="input-field" id="kycNationality" style="appearance:auto;"><option value="">Select country</option></select></div>
+          <div><label class="input-label">Street Address</label><input type="text" class="input-field" id="kycAddress" placeholder="123 Main Street"></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;" class="resp-2">
+            <div><label class="input-label">City</label><input type="text" class="input-field" id="kycCity" placeholder="New York"></div>
+            <div><label class="input-label">Postal Code</label><input type="text" class="input-field" id="kycPostal" placeholder="10001"></div>
+          </div>
+        </div>
+        <p id="kycError" class="hidden" style="margin-top:14px;color:#ea3943;font-size:13px;"></p>
+        <button class="submit-btn" id="kycNextBtn" style="margin-top:20px;">Continue</button>
+      </div>
+
+      <div id="kycStep2" style="display:none;">
+        <h4 style="font-size:15px;font-weight:600;margin-bottom:4px;">Identity Document</h4>
+        <p style="font-size:12px;color:var(--text-tertiary);margin-bottom:20px;">Upload a valid government-issued photo ID</p>
+        <div style="display:flex;flex-direction:column;gap:14px;">
+          <div><label class="input-label">Document Type</label>
+            <select class="input-field" id="kycDocType" style="appearance:auto;">
+              <option>Passport</option><option>Driver's License</option><option>National ID Card</option>
+            </select>
+          </div>
+          <div>
+            <label class="input-label">Front of Document</label>
+            <div class="dropzone" id="kycUploadFront" style="padding:32px;">
+              <input type="file" id="kycFrontInput" accept="image/*" style="display:none;">
+              <div id="kycFrontPlaceholder">
+                <i data-lucide="upload" style="width:32px;height:32px;color:var(--text-tertiary);margin:0 auto 8px;display:block;"></i>
+                <div style="font-size:13px;color:var(--text-secondary);">Click to upload</div>
+                <div style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">JPG, PNG (max 10MB)</div>
+              </div>
+              <div id="kycFrontPreview" style="display:none;">
+                <i data-lucide="file-check" style="width:32px;height:32px;color:var(--accent-green);margin:0 auto 8px;display:block;"></i>
+                <div style="font-size:13px;color:var(--accent-green);font-weight:500;" id="kycFrontName"></div>
+                <div style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">Click to replace</div>
+              </div>
+            </div>
+          </div>
+          <div>
+            <label class="input-label">Back of Document <span style="color:var(--text-tertiary);font-weight:400;">(optional)</span></label>
+            <div class="dropzone" id="kycUploadBack" style="padding:32px;">
+              <input type="file" id="kycBackInput" accept="image/*" style="display:none;">
+              <div id="kycBackPlaceholder">
+                <i data-lucide="upload" style="width:32px;height:32px;color:var(--text-tertiary);margin:0 auto 8px;display:block;"></i>
+                <div style="font-size:13px;color:var(--text-secondary);">Click to upload</div>
+                <div style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">JPG, PNG (max 10MB)</div>
+              </div>
+              <div id="kycBackPreview" style="display:none;">
+                <i data-lucide="file-check" style="width:32px;height:32px;color:var(--accent-green);margin:0 auto 8px;display:block;"></i>
+                <div style="font-size:13px;color:var(--accent-green);font-weight:500;" id="kycBackName"></div>
+                <div style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">Click to replace</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:20px;">
+          <button class="btn-secondary rounded-xl px-5 py-3 text-sm font-medium" id="kycBackBtn">Back</button>
+          <button class="submit-btn" id="kycSubmitBtn" style="flex:1;">Submit for Review</button>
+        </div>
+      </div>
+
+      <div id="kycStep3" style="display:none;text-align:center;padding:20px 0;">
+        <div style="width:64px;height:64px;border-radius:50%;background:rgba(247,147,26,0.12);display:flex;align-items:center;justify-content:center;margin:0 auto 14px;">
+          <i data-lucide="clock" style="width:30px;height:30px;color:var(--accent-orange);"></i>
+        </div>
+        <h4 style="font-size:17px;font-weight:700;margin-bottom:6px;">Submitted for Review</h4>
+        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:18px;">We have received your documents. Verification usually completes within 24 hours.</p>
+        <button class="submit-btn" id="kycFinishBtn" style="background:linear-gradient(135deg,#F7931A,#FDB022);">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="mobile-bottom-bar" id="shellBottom"></div>
+
+<script src="assets/js/auth.js"></script>
+<script src="assets/js/shell.js"></script>
+<script src="assets/js/settings-page.js"></script>
+</body>
+</html>

@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bitbase &ndash; History</title>
+  <meta name="description" content="Your trades, deposits, withdrawals, transfers, conversions and loans.">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="assets/css/app.css">
+  <link rel="stylesheet" href="assets/css/pages.css">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: { extend: {
+        colors: { dark: '#0f0f0f', 'dark-card': '#1a1a1a', 'dark-border': '#2a2a2a', accent: '#f7931a', 'accent-hover': '#e88417' },
+        fontFamily: { heading: ['Space Grotesk', 'sans-serif'], body: ['Inter', 'sans-serif'], mono: ['IBM Plex Mono', 'monospace'] }
+      } }
+    }
+  </script>
+  <style>
+    [data-theme="light"] { --bg-primary:#f5f5f5; --bg-secondary:#fff; --bg-tertiary:#e8e8e8; --bg-glass:rgba(255,255,255,.92); --text-primary:#1a1a1a; --text-secondary:#555; --text-tertiary:#999; --border-subtle:rgba(0,0,0,.06); --border-medium:rgba(0,0,0,.1); --border-glow:rgba(247,147,26,.4); }
+    [data-theme="light"] body, [data-theme="light"] .page-body { background:#f5f5f5; color:#1a1a1a; }
+    [data-theme="light"] .dash-header { background:rgba(255,255,255,.9); }
+    @keyframes tsp { to { transform: rotate(360deg) } }
+  </style>
+</head>
+<body class="page-body">
+<script>
+(function(){
+  try {
+    var p = JSON.parse(localStorage.getItem('bb_preferences'));
+    if (p && p.theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
+  } catch(e) {}
+})();
+</script>
+
+<header class="dash-header" id="shellHeader">
+  <div class="dash-header-inner"></div>
+</header>
+
+<div id="mobileNav" class="mobile-nav-overlay">
+  <div class="mobile-nav"></div>
+</div>
+
+<div class="page-content">
+
+  <div class="mb-8">
+    <div class="inline-flex items-center gap-2 mb-3" style="background:rgba(247,147,26,0.08);border:1px solid rgba(247,147,26,0.2);padding:5px 14px;border-radius:9999px;">
+      <i data-lucide="history" style="width:14px;height:14px;color:#f7931a;"></i>
+      <span style="font-size:12px;font-weight:600;color:#f7931a;text-transform:uppercase;letter-spacing:0.05em;">History</span>
+    </div>
+    <h1 class="font-heading text-3xl font-bold mb-1">History</h1>
+    <p class="text-secondary">View your transaction history, deposits, withdrawals, and borrow activity.</p>
+  </div>
+
+  <div class="flex flex-wrap gap-2 mb-6 overflow-x-auto" id="filterTabs">
+    <button class="tab-btn active" data-filter="all">All</button>
+    <button class="tab-btn" data-filter="trade">Trades</button>
+    <button class="tab-btn" data-filter="deposit">Deposits</button>
+    <button class="tab-btn" data-filter="withdrawal">Withdrawals</button>
+    <button class="tab-btn" data-filter="transfer">Transfers</button>
+    <button class="tab-btn" data-filter="convert">Conversions</button>
+    <button class="tab-btn" data-filter="borrow">Borrow</button>
+    <button class="tab-btn" data-filter="demo">Demo Trades</button>
+  </div>
+
+  <div class="flex flex-wrap items-center gap-3 mb-6">
+    <div class="search-wrapper">
+      <i data-lucide="search"></i>
+      <input type="text" id="searchInput" placeholder="Search transactions..." class="filter-input" style="max-width:260px;width:100%;">
+    </div>
+    <input type="date" id="dateFrom" class="filter-input" placeholder="From" style="padding-left:14px;">
+    <input type="date" id="dateTo" class="filter-input" placeholder="To" style="padding-left:14px;">
+    <button class="btn-secondary rounded-lg px-4 text-sm font-medium" id="exportBtn" style="height:40px;"><i data-lucide="download" style="width:14px;height:14px;"></i> Export CSV</button>
+    <button class="btn-secondary rounded-lg px-4 text-sm font-medium hidden" id="clearFilters" style="height:40px;"><i data-lucide="x" style="width:14px;height:14px;"></i> Clear</button>
+  </div>
+
+  <div class="glass-card rounded-xl table-wrap" id="tableCard">
+    <table class="mkt-table" style="min-width:820px;">
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Amount</th>
+          <th>Time</th>
+          <th>Status</th>
+          <th class="text-right">Action</th>
+        </tr>
+      </thead>
+      <tbody id="tableBody"></tbody>
+    </table>
+    <div id="emptyState" class="empty-state" style="display:none;">
+      <div class="icon-box"><i data-lucide="inbox" style="width:28px;height:28px;color:var(--text-tertiary);"></i></div>
+      <div style="font-size:16px;font-weight:600;margin-bottom:6px;">No records found</div>
+      <div style="font-size:13px;color:var(--text-secondary);">Try adjusting your filters</div>
+    </div>
+  </div>
+
+  <div class="flex flex-col sm:flex-row items-center justify-between gap-4 mt-6">
+    <div class="text-sm text-secondary" id="showingText">Showing 0 transactions</div>
+    <div class="flex items-center gap-1" id="pagination"></div>
+  </div>
+
+</div>
+
+<div class="modal-overlay" id="detailModal">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3 class="font-heading" style="font-size:18px;font-weight:700;">Transaction Details</h3>
+      <button id="detailClose" style="width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text-tertiary);" aria-label="Close"><i data-lucide="x" style="width:18px;height:18px;"></i></button>
+    </div>
+    <div class="modal-body" id="modalContent"></div>
+  </div>
+</div>
+
+<div class="mobile-bottom-bar" id="shellBottom"></div>
+
+<script src="assets/js/auth.js"></script>
+<script src="assets/js/data.js"></script>
+<script src="assets/js/shell.js"></script>
+<script src="assets/js/history-page.js"></script>
+</body>
+</html>

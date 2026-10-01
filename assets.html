@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bitbase &ndash; Assets</title>
+  <meta name="description" content="Manage deposits, withdrawals, transfers, conversions and loans.">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="assets/css/app.css">
+  <link rel="stylesheet" href="assets/css/pages.css">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: { extend: {
+        colors: { dark: '#0f0f0f', 'dark-card': '#1a1a1a', 'dark-border': '#2a2a2a', accent: '#f7931a', 'accent-hover': '#e88417' },
+        fontFamily: { heading: ['Space Grotesk', 'sans-serif'], body: ['Inter', 'sans-serif'], mono: ['IBM Plex Mono', 'monospace'] }
+      } }
+    }
+  </script>
+  <style>
+    [data-theme="light"] { --bg-primary:#f5f5f5; --bg-secondary:#fff; --bg-tertiary:#e8e8e8; --bg-glass:rgba(255,255,255,.92); --text-primary:#1a1a1a; --text-secondary:#555; --text-tertiary:#999; --border-subtle:rgba(0,0,0,.06); --border-medium:rgba(0,0,0,.1); --border-glow:rgba(247,147,26,.4); }
+    [data-theme="light"] body, [data-theme="light"] .page-body { background:#f5f5f5; color:#1a1a1a; }
+    [data-theme="light"] .dash-header { background:rgba(255,255,255,.9); }
+    @keyframes tsp { to { transform: rotate(360deg) } }
+  </style>
+</head>
+<body class="page-body">
+<script>
+(function(){
+  try {
+    var p = JSON.parse(localStorage.getItem('bb_preferences'));
+    if (p && p.theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
+  } catch(e) {}
+})();
+</script>
+
+<header class="dash-header" id="shellHeader">
+  <div class="dash-header-inner"></div>
+</header>
+
+<div id="mobileNav" class="mobile-nav-overlay">
+  <div class="mobile-nav"></div>
+</div>
+
+<div class="page-content">
+
+  <div class="mb-6">
+    <h1 class="font-heading text-3xl font-bold mb-1">Assets</h1>
+    <p class="text-secondary" style="font-size:14px;">Your portfolio overview</p>
+  </div>
+
+  <div class="glass-card rounded-xl p-6 mb-6">
+    <div class="text-sm text-secondary mb-2">Total Value</div>
+    <div class="flex items-baseline gap-3">
+      <div class="font-mono text-4xl font-bold gradient-text" id="assetsTotalValue">&mdash;</div>
+      <div class="badge-green" id="assetsChangeBadge" style="font-size:14px;padding:4px 10px;">&mdash;</div>
+    </div>
+  </div>
+
+  <div class="flex flex-wrap gap-3 mb-6">
+    <button class="btn-primary px-5 py-2.5 rounded-xl text-sm font-semibold text-white" data-modal="depositModal">
+      <i data-lucide="arrow-down-left" style="width:14px;height:14px;display:inline;vertical-align:middle;margin-right:4px;"></i>Deposit
+    </button>
+    <button class="px-5 py-2.5 rounded-xl text-sm font-semibold" style="background:rgba(65,105,225,0.12);border:1px solid rgba(65,105,225,0.3);color:#4169E1;" id="supportBtn">
+      <i data-lucide="headphones" style="width:14px;height:14px;display:inline;vertical-align:middle;margin-right:4px;"></i>Customer Service
+    </button>
+    <button class="btn-secondary px-5 py-2.5 rounded-xl text-sm font-semibold" data-modal="withdrawModal">
+      <i data-lucide="arrow-up-right" style="width:14px;height:14px;display:inline;vertical-align:middle;margin-right:4px;"></i>Withdraw
+    </button>
+    <button class="px-5 py-2.5 rounded-xl text-sm font-semibold" style="background:rgba(139,92,246,0.12);border:1px solid rgba(139,92,246,0.3);color:#8b5cf6;" data-modal="loanModal">
+      <i data-lucide="landmark" style="width:14px;height:14px;display:inline;vertical-align:middle;margin-right:4px;"></i>Loan
+    </button>
+    <button class="btn-secondary px-5 py-2.5 rounded-xl text-sm font-semibold" data-modal="transferModal">
+      <i data-lucide="repeat" style="width:14px;height:14px;display:inline;vertical-align:middle;margin-right:4px;"></i>Transfer
+    </button>
+    <button class="btn-secondary px-5 py-2.5 rounded-xl text-sm font-semibold" data-modal="convertModal">
+      <i data-lucide="arrow-left-right" style="width:14px;height:14px;display:inline;vertical-align:middle;margin-right:4px;"></i>Convert
+    </button>
+  </div>
+
+  <div class="flex gap-2 mb-6 overflow-x-auto">
+    <button class="tab-btn active" data-tab="all">Overview</button>
+    <button class="tab-btn" data-tab="spot">Spot</button>
+    <button class="tab-btn" data-tab="funding">Funding</button>
+  </div>
+
+  <div class="glass-card rounded-xl mb-8 overflow-x-auto">
+    <table class="mkt-table" style="min-width:760px;">
+      <thead>
+        <tr>
+          <th>Asset</th>
+          <th class="text-right">Total Balance</th>
+          <th class="text-right">Available</th>
+          <th class="text-right">Order Frozen</th>
+          <th class="text-right">Value (USD)</th>
+          <th class="text-right">24h Change</th>
+          <th class="text-center">Action</th>
+        </tr>
+      </thead>
+      <tbody id="assetsTableBody"></tbody>
+    </table>
+  </div>
+
+  <div class="glass-card rounded-xl p-6 mb-6">
+    <h2 class="font-heading font-semibold text-lg mb-5">Portfolio Distribution</h2>
+    <div style="height:28px;border-radius:8px;overflow:hidden;display:flex;" class="mb-4" id="distBar"></div>
+    <div class="flex flex-wrap gap-x-6 gap-y-2" id="distLegend"></div>
+  </div>
+
+  <div class="glass-card rounded-xl p-5 flex items-center justify-between mb-8">
+    <div>
+      <div class="font-medium text-sm mb-0.5">Hide assets with zero balance</div>
+      <div class="text-xs text-secondary">Assets with no balance will not be shown in your portfolio.</div>
+    </div>
+    <label class="relative inline-flex items-center cursor-pointer" style="width:44px;height:24px;">
+      <input type="checkbox" class="sr-only peer" id="hideZeroToggle">
+      <div style="width:44px;height:24px;border-radius:12px;background:rgba(255,255,255,0.15);transition:background 0.2s;" class="peer-checked:!bg-[#f7931a]"></div>
+      <div style="position:absolute;left:2px;top:2px;width:20px;height:20px;border-radius:50%;background:#fff;transition:transform 0.2s;" class="peer-checked:translate-x-[20px]"></div>
+    </label>
+  </div>
+
+</div>
+
+<!-- ==================== DEPOSIT ==================== -->
+<div class="modal-overlay" id="depositModal" data-close>
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3 class="font-heading font-bold text-lg">Deposit Crypto</h3>
+      <button data-close style="background:none;border:none;cursor:pointer;color:var(--text-tertiary);" aria-label="Close"><i data-lucide="x" style="width:20px;height:20px;"></i></button>
+    </div>
+    <div class="modal-body">
+      <div class="field-group">
+        <label class="input-label">Select Coin</label>
+        <select class="input-field" id="depositCoinSelect"></select>
+      </div>
+      <div class="field-group">
+        <label class="input-label">Network</label>
+        <div id="depositNetworkDisplay" style="padding:10px 14px;background:rgba(255,255,255,0.06);border:1px solid var(--border-medium);border-radius:10px;font-size:14px;">ERC20</div>
+      </div>
+      <div class="field-group">
+        <label class="input-label">Deposit Address</label>
+        <div style="display:flex;gap:8px;">
+          <div id="depositAddressText" style="flex:1;padding:10px 14px;background:rgba(255,255,255,0.06);border:1px solid var(--border-medium);border-radius:10px;font-family:'IBM Plex Mono',monospace;font-size:13px;word-break:break-all;"></div>
+          <button class="copy-btn" id="copyAddrBtn">Copy</button>
+        </div>
+      </div>
+      <div class="field-group" style="display:flex;justify-content:center;">
+        <canvas id="depositQR" width="160" height="160" style="border-radius:8px;background:#fff;padding:8px;"></canvas>
+      </div>
+      <div class="field-group">
+        <div style="padding:10px 14px;background:rgba(255,255,255,0.04);border-radius:8px;font-size:12px;color:var(--text-secondary);">
+          <div style="margin-bottom:6px;">Min deposit: <span id="depositMinAmount" style="color:var(--text-primary);font-weight:600;">&mdash;</span></div>
+          <div style="color:#f59e0b;font-weight:500;">Only send <span id="depositWarnCoin">BTC</span> on the <span id="depositWarnNetwork">Bitcoin</span> network. Sending any other asset may result in permanent loss.</div>
+        </div>
+      </div>
+      <div class="field-group">
+        <label class="input-label">Amount Deposited</label>
+        <input type="number" id="depositAmount" class="input-field" placeholder="Enter the amount you sent" step="any" min="0">
+        <p id="depositError" class="hidden" style="color:#ea3943;font-size:13px;margin-top:6px;"></p>
+      </div>
+      <div class="field-group">
+        <label class="input-label">Proof of Deposit <span style="color:#ea3943;">*</span> <span style="color:var(--text-tertiary);font-weight:400;">(optional)</span></label>
+        <div id="depositProofPreview" style="display:none;padding:8px 12px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:8px;font-size:12px;color:rgba(255,255,255,0.6);align-items:center;gap:8px;margin-bottom:8px;">
+          <i data-lucide="file" style="width:14px;height:14px;flex-shrink:0;"></i>
+          <span id="depositProofName" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"></span>
+          <button id="removeDepositProof" style="background:none;border:none;cursor:pointer;color:rgba(255,255,255,0.4);font-size:16px;" aria-label="Remove file">&times;</button>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <button type="button" id="attachProofBtn" style="flex:1;padding:10px;background:rgba(65,105,225,0.1);border:1px solid rgba(65,105,225,0.3);border-radius:10px;color:#4169E1;font-size:12px;font-weight:600;cursor:pointer;text-align:center;">Attach Image / File</button>
+          <input type="file" id="depositProofInput" accept="image/*,.pdf" style="display:none;">
+        </div>
+      </div>
+      <button class="submit-btn" id="depositSubmitBtn"><span>Submit Deposit Request</span><div class="spinner" id="depositSpinner"></div></button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== WITHDRAW ==================== -->
+<div class="modal-overlay" id="withdrawModal" data-close>
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3 class="font-heading font-bold text-lg">Withdraw Crypto</h3>
+      <button data-close style="background:none;border:none;cursor:pointer;color:var(--text-tertiary);" aria-label="Close"><i data-lucide="x" style="width:20px;height:20px;"></i></button>
+    </div>
+    <div class="modal-body">
+      <div class="field-group">
+        <label class="input-label">Select Coin</label>
+        <select class="input-field" id="withdrawCoinSelect"></select>
+      </div>
+      <div class="field-group">
+        <label class="input-label">Network</label>
+        <select class="input-field" id="withdrawNetworkSelect"></select>
+      </div>
+      <div class="field-group">
+        <label class="input-label">Recipient Address</label>
+        <input type="text" id="withdrawAddress" class="input-field" placeholder="Enter wallet address">
+      </div>
+      <div class="field-group">
+        <label class="input-label" style="display:flex;justify-content:space-between;align-items:center;">
+          <span>Amount</span>
+          <span style="font-size:12px;color:var(--text-tertiary);">Available: <span id="withdrawAvailable" style="color:var(--text-primary);">&mdash;</span></span>
+        </label>
+        <div style="display:flex;gap:8px;">
+          <input type="number" id="withdrawAmount" class="input-field" placeholder="0.00" step="any" min="0" style="flex:1;">
+          <button class="max-btn" id="withdrawMaxBtn">Max</button>
+        </div>
+      </div>
+      <div class="field-group">
+        <div style="display:flex;justify-content:space-between;font-size:13px;">
+          <span class="text-secondary">Network Fee</span>
+          <span id="withdrawFee" class="font-mono" style="color:var(--text-primary);">&mdash;</span>
+        </div>
+      </div>
+      <p id="withdrawError" class="hidden" style="color:#ea3943;font-size:13px;margin-bottom:12px;"></p>
+      <button class="submit-btn" id="withdrawSubmitBtn"><span>Confirm Withdrawal</span><div class="spinner" id="withdrawSpinner"></div></button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== TRANSFER ==================== -->
+<div class="modal-overlay" id="transferModal" data-close>
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3 class="font-heading font-bold text-lg">Transfer</h3>
+      <button data-close style="background:none;border:none;cursor:pointer;color:var(--text-tertiary);" aria-label="Close"><i data-lucide="x" style="width:20px;height:20px;"></i></button>
+    </div>
+    <div class="modal-body">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+        <div style="flex:1;">
+          <label class="input-label">From</label>
+          <select class="input-field" id="transferFrom">
+            <option value="spot">Spot Wallet</option>
+            <option value="funding">Funding Wallet</option>
+          </select>
+        </div>
+        <button class="swap-btn" id="transferSwapBtn" style="margin-top:16px;" aria-label="Swap direction"><i data-lucide="arrow-left-right" style="width:16px;height:16px;color:var(--text-tertiary);"></i></button>
+        <div style="flex:1;">
+          <label class="input-label">To</label>
+          <select class="input-field" id="transferTo">
+            <option value="funding">Funding Wallet</option>
+            <option value="spot">Spot Wallet</option>
+          </select>
+        </div>
+      </div>
+      <div class="field-group">
+        <label class="input-label">Select Coin</label>
+        <select class="input-field" id="transferCoinSelect"></select>
+      </div>
+      <div class="field-group">
+        <label class="input-label" style="display:flex;justify-content:space-between;align-items:center;">
+          <span>Amount</span>
+          <span style="font-size:12px;color:var(--text-tertiary);">Available: <span id="transferAvailable" style="color:var(--text-primary);">&mdash;</span></span>
+        </label>
+        <div style="display:flex;gap:8px;">
+          <input type="number" id="transferAmount" class="input-field" placeholder="0.00" step="any" min="0" style="flex:1;">
+          <button class="max-btn" id="transferMaxBtn">Max</button>
+        </div>
+      </div>
+      <p id="transferError" class="hidden" style="color:#ea3943;font-size:13px;margin-bottom:12px;"></p>
+      <button class="submit-btn" id="transferSubmitBtn"><span>Confirm Transfer</span><div class="spinner" id="transferSpinner"></div></button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== CONVERT ==================== -->
+<div class="modal-overlay" id="convertModal" data-close>
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3 class="font-heading font-bold text-lg">Quick Convert</h3>
+      <button data-close style="background:none;border:none;cursor:pointer;color:var(--text-tertiary);" aria-label="Close"><i data-lucide="x" style="width:20px;height:20px;"></i></button>
+    </div>
+    <div class="modal-body">
+      <div class="field-group">
+        <label class="input-label">From</label>
+        <div style="display:flex;gap:8px;">
+          <select class="input-field" id="convertFromCoin" style="width:120px;"></select>
+          <div style="flex:1;display:flex;gap:8px;">
+            <input type="number" id="convertFromAmount" class="input-field" placeholder="0.00" step="any" min="0" style="flex:1;">
+            <button class="max-btn" id="convertMaxBtn">Max</button>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:center;margin:4px 0;">
+        <button class="swap-btn" id="convertSwapBtn" aria-label="Swap"><i data-lucide="arrow-down" style="width:16px;height:16px;color:var(--text-tertiary);"></i></button>
+      </div>
+      <div class="field-group">
+        <label class="input-label">To</label>
+        <div style="display:flex;gap:8px;">
+          <select class="input-field" id="convertToCoin" style="width:120px;"></select>
+          <input type="text" id="convertToAmount" placeholder="0.00" readonly style="flex:1;padding:0 14px;height:48px;background:rgba(255,255,255,0.03);border:1px solid var(--border-medium);border-radius:10px;color:var(--text-primary);font-family:'IBM Plex Mono',monospace;font-size:14px;outline:none;">
+        </div>
+      </div>
+      <div class="field-group">
+        <div style="display:flex;justify-content:space-between;font-size:13px;">
+          <span class="text-secondary">Exchange Rate</span>
+          <span id="convertRate" class="font-mono" style="color:var(--text-primary);">&mdash;</span>
+        </div>
+      </div>
+      <p id="convertError" class="hidden" style="color:#ea3943;font-size:13px;margin-bottom:12px;"></p>
+      <button class="submit-btn" id="convertSubmitBtn"><span>Convert</span><div class="spinner" id="convertSpinner"></div></button>
+    </div>
+  </div>
+</div>
+
+<!-- ==================== LOAN ==================== -->
+<div class="modal-overlay" id="loanModal" data-close>
+  <div class="modal-box" style="max-width:540px;">
+    <div class="modal-header">
+      <h3 class="font-heading font-bold text-lg">Borrow USDT</h3>
+      <button data-close style="background:none;border:none;cursor:pointer;color:var(--text-tertiary);" aria-label="Close"><i data-lucide="x" style="width:20px;height:20px;"></i></button>
+    </div>
+    <div class="modal-body">
+      <div style="background:rgba(139,92,246,0.08);border:1px solid rgba(139,92,246,0.2);border-radius:10px;padding:12px 14px;margin-bottom:16px;">
+        <div style="font-size:13px;font-weight:600;color:#8b5cf6;margin-bottom:4px;">How it works</div>
+        <div style="font-size:12px;color:var(--text-secondary);line-height:1.5;">Borrow USDT against your portfolio. Interest rates vary by duration: <b style="color:var(--text-primary);">5%&ndash;15%</b>.</div>
+      </div>
+      <div class="field-group">
+        <label class="input-label">Borrow Amount (USDT)</label>
+        <input type="number" id="loanBorrowAmt" class="input-field" placeholder="0.00" step="any" min="0">
+      </div>
+      <div class="field-group">
+        <label class="input-label">Loan Duration</label>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;" id="loanDurations">
+          <button class="loan-duration-btn active" data-days="7" data-rate="0.05">7D</button>
+          <button class="loan-duration-btn" data-days="30" data-rate="0.08">30D</button>
+          <button class="loan-duration-btn" data-days="90" data-rate="0.10">90D</button>
+          <button class="loan-duration-btn" data-days="180" data-rate="0.12">6M</button>
+          <button class="loan-duration-btn" data-days="365" data-rate="0.15">1Y</button>
+        </div>
+      </div>
+
+      <div id="loanInterestSection" style="display:none;background:rgba(255,255,255,0.03);border:1px solid var(--border-subtle);border-radius:10px;padding:12px 14px;margin-top:4px;">
+        <div style="font-size:12px;font-weight:600;color:var(--text-secondary);margin-bottom:10px;">Loan Summary</div>
+        <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px;"><span class="text-secondary">Borrow Amount</span><span id="loanSummaryBorrow" class="font-mono" style="color:var(--text-primary);">$0.00</span></div>
+        <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px;"><span class="text-secondary">Duration</span><span id="loanSummaryDuration" class="font-mono" style="color:var(--text-primary);">7 Days</span></div>
+        <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px;"><span class="text-secondary">Interest Rate</span><span id="loanSummaryRate" class="font-mono" style="color:var(--text-primary);">5.0%</span></div>
+        <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:10px;"><span class="text-secondary">Interest Accrued</span><span id="loanSummaryInterest" class="font-mono" style="color:#f7931a;">+$0.00</span></div>
+        <div style="padding-top:10px;border-top:1px solid var(--border-subtle);display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:13px;font-weight:600;color:var(--text-secondary);">Total Owed</span>
+          <div id="loanSummaryTotal" class="font-mono" style="font-size:15px;font-weight:700;color:var(--text-primary);">$0.00</div>
+        </div>
+      </div>
+
+      <div class="field-group" style="margin-top:12px;">
+        <label class="input-label">Proof of Income <span style="color:var(--text-tertiary);font-weight:400;">(optional)</span></label>
+        <div class="dropzone" id="loanUploadArea" style="padding:20px;">
+          <div id="loanUploadPlaceholder">
+            <div style="margin:0 auto 8px;width:40px;height:40px;border-radius:10px;background:rgba(139,92,246,0.1);display:flex;align-items:center;justify-content:center;"><i data-lucide="upload" style="width:18px;height:18px;color:#8b5cf6;"></i></div>
+            <div style="font-size:13px;color:var(--text-secondary);">Click or drag to upload image</div>
+            <div style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">PNG, JPG, PDF (max 5MB)</div>
+          </div>
+          <div id="loanUploadPreview" style="display:none;"></div>
+        </div>
+        <input type="file" id="loanProofInput" accept="image/*,.pdf" style="display:none;">
+      </div>
+
+      <div class="field-group" style="margin-top:12px;">
+        <div style="display:flex;justify-content:space-between;font-size:13px;">
+          <span class="text-secondary">Liquidation Threshold</span>
+          <span class="font-mono" style="color:#ea3943;">85%</span>
+        </div>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:10px;margin:12px 0 16px;">
+        <input type="checkbox" id="loanAgreeCheck" style="margin-top:2px;width:16px;height:16px;accent-color:#8b5cf6;cursor:pointer;flex-shrink:0;">
+        <label for="loanAgreeCheck" style="font-size:12px;color:var(--text-secondary);line-height:1.5;cursor:pointer;">I have read and agreed to the loan agreement.</label>
+      </div>
+      <p id="loanError" class="hidden" style="color:#ea3943;font-size:13px;margin-bottom:12px;"></p>
+      <button class="submit-btn" id="loanSubmitBtn" style="background:linear-gradient(135deg,#8b5cf6,#7c3aed);"><span>Confirm Borrow</span><div class="spinner" id="loanSpinner"></div></button>
+    </div>
+  </div>
+</div>
+
+<div class="toast-stack" id="toastStack"></div>
+
+<!-- ==================== CUSTOMER SERVICE ==================== -->
+<button id="supportTrigger" style="position:fixed;bottom:24px;right:24px;width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,#f7931a,#fdb022);color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 8px 24px rgba(247,147,26,.35);z-index:8998;cursor:pointer;" aria-label="Customer service">
+  <i data-lucide="headphones" style="width:22px;height:22px;"></i>
+</button>
+<div id="supportPanel" style="display:none;position:fixed;bottom:24px;right:24px;z-index:8999;width:380px;max-width:calc(100vw - 32px);height:520px;max-height:calc(100vh - 48px);border-radius:16px;background:#1a1a1a;border:1px solid rgba(255,255,255,0.08);box-shadow:0 20px 60px rgba(0,0,0,0.5);overflow:hidden;flex-direction:column;">
+  <div style="background:linear-gradient(135deg,#4169E1,#2850c8);padding:16px 20px;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;">
+    <div style="display:flex;align-items:center;gap:12px;">
+      <div style="width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,0.2);display:flex;align-items:center;justify-content:center;">
+        <i data-lucide="headphones" style="width:18px;height:18px;color:#fff;"></i>
+      </div>
+      <div>
+        <div style="font-size:14px;font-weight:600;color:#fff;">Customer Support</div>
+        <div style="font-size:11px;color:rgba(255,255,255,0.7);">We typically reply in minutes</div>
+      </div>
+    </div>
+    <button id="supportClose" style="background:none;border:none;color:rgba(255,255,255,0.8);cursor:pointer;" aria-label="Close support"><i data-lucide="x" style="width:18px;height:18px;"></i></button>
+  </div>
+  <div id="supportBody" style="flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px;"></div>
+  <div style="padding:12px;border-top:1px solid rgba(255,255,255,0.08);display:flex;gap:8px;flex-shrink:0;">
+    <input type="text" id="supportInput" placeholder="Type a message..." style="flex:1;padding:10px 14px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:10px;color:#fff;font-size:13px;outline:none;">
+    <button id="supportSend" style="padding:10px 16px;background:linear-gradient(135deg,#f7931a,#fdb022);border:none;border-radius:10px;color:#fff;cursor:pointer;font-weight:600;">
+      <i data-lucide="send" style="width:15px;height:15px;"></i>
+    </button>
+  </div>
+</div>
+
+<div class="mobile-bottom-bar" id="shellBottom"></div>
+
+<script src="assets/js/auth.js"></script>
+<script src="assets/js/data.js"></script>
+<script src="assets/js/shell.js"></script>
+<script src="assets/js/assets-page.js"></script>
+</body>
+</html>

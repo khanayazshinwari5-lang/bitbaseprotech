@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Markets | BitBase</title>
+  <meta name="description" content="Live crypto, metals, forex and commodities prices.">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="assets/css/app.css">
+  <link rel="stylesheet" href="assets/css/pages.css">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: { extend: {
+        colors: { dark: '#0f0f0f', 'dark-card': '#1a1a1a', 'dark-border': '#2a2a2a', accent: '#f7931a', 'accent-hover': '#e88417' },
+        fontFamily: { heading: ['Space Grotesk', 'sans-serif'], body: ['Inter', 'sans-serif'], mono: ['IBM Plex Mono', 'monospace'] }
+      } }
+    }
+  </script>
+  <style>
+    [data-theme="light"] { --bg-primary:#f5f5f5; --bg-secondary:#fff; --bg-tertiary:#e8e8e8; --bg-glass:rgba(255,255,255,.92); --text-primary:#1a1a1a; --text-secondary:#555; --text-tertiary:#999; --border-subtle:rgba(0,0,0,.06); --border-medium:rgba(0,0,0,.1); --border-glow:rgba(247,147,26,.4); }
+    [data-theme="light"] body, [data-theme="light"] .page-body { background:#f5f5f5; color:#1a1a1a; }
+    [data-theme="light"] .dash-header { background:rgba(255,255,255,.9); }
+    [data-theme="light"] .mkt-table tbody tr:hover { background:rgba(247,147,26,.04); }
+  </style>
+</head>
+<body class="page-body">
+<script>
+(function(){
+  try {
+    var p = JSON.parse(localStorage.getItem('bb_preferences'));
+    if (p && p.theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
+  } catch(e) {}
+})();
+</script>
+
+<header class="dash-header" id="shellHeader">
+  <div class="dash-header-inner"></div>
+</header>
+
+<div id="mobileNav" class="mobile-nav-overlay">
+  <div class="mobile-nav"></div>
+</div>
+
+<div class="page-content">
+
+  <div class="mb-8">
+    <div style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--accent-yellow);" class="mb-2">LIVE MARKETS</div>
+    <h1 class="font-heading text-3xl font-bold mb-2">Markets <span id="liveBadge" style="display:inline-block;vertical-align:middle;font-size:11px;font-weight:700;color:rgba(255,255,255,0.25);letter-spacing:0.05em;margin-left:8px;">&#9679; CONNECTING</span></h1>
+    <p style="color:var(--text-secondary);font-size:15px;">Real-time prices for crypto, metals, forex &amp; commodities</p>
+  </div>
+
+  <div class="flex flex-col sm:flex-row items-start sm:items-center gap-4 mb-6">
+    <div class="relative" style="flex:1;max-width:384px;width:100%;">
+      <i data-lucide="search" style="position:absolute;left:14px;top:50%;transform:translateY(-50%);width:16px;height:16px;color:var(--text-tertiary);"></i>
+      <input type="text" id="searchInput" placeholder="Search markets..." class="input-field" style="padding-left:40px;">
+    </div>
+    <div class="flex gap-2 flex-wrap">
+      <button class="tab-btn active" data-tab="crypto">Crypto</button>
+      <button class="tab-btn" data-tab="metals">Metals</button>
+      <button class="tab-btn" data-tab="forex">Forex</button>
+      <button class="tab-btn" data-tab="commodities">Commodities</button>
+    </div>
+  </div>
+
+  <div class="glass-card rounded-xl overflow-hidden">
+    <div class="overflow-x-auto">
+      <table class="mkt-table">
+        <thead>
+          <tr>
+            <th style="width:40px;">#</th>
+            <th>Name</th>
+            <th class="text-right">Price</th>
+            <th class="text-right">24h Change</th>
+            <th class="text-right">24h Volume</th>
+            <th class="text-right">Market Cap</th>
+            <th class="text-center">Chart (7d)</th>
+            <th class="text-right">Trade</th>
+          </tr>
+        </thead>
+        <tbody id="marketBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <p class="text-[12px] mt-4" id="marketsNote" style="color:var(--text-tertiary);text-align:center;">
+  <span id="freshness" style="font-weight:600;"></span>
+</p>
+
+</div>
+
+<div class="mobile-bottom-bar" id="shellBottom"></div>
+
+<script src="assets/js/auth.js"></script>
+<script src="assets/js/data.js"></script>
+<script src="assets/js/shell.js"></script>
+<script src="assets/js/markets-page.js"></script>
+</body>
+</html>
