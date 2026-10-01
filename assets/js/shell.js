@@ -154,6 +154,8 @@
     if (bottom) bottom.innerHTML = bottomHtml(opts.bottom || active);
 
     paintIdentity();
+    var loading=document.getElementById('shellLoading');if(loading)loading.remove();
+    global.addEventListener('bitbase:data',paintIdentity);
     global.addEventListener('bitbase:session', function (e) { if (!e.detail.signedIn) global.location.replace('login.html'); });
     wireDrawer();
 
@@ -238,4 +240,23 @@
 
   global.BitbaseShell = { mount: mount, NAV: NAV, BOTTOM: BOTTOM, esc: esc, paintIdentity: paintIdentity,
     readAttachment: readAttachment };
+
+  // Navigation is static; it need not wait for authentication or database reads.
+  function frame() {
+    var header=document.getElementById('shellHeader');
+    if (!header || header.querySelector('.dash-nav')) return;
+    var active=String(global.location.pathname || '').split('/').pop().replace('.html','');
+    header.querySelector('.dash-header-inner').innerHTML=headerHtml(active,'');
+    var name=header.querySelector('.user-name'),email=header.querySelector('.user-email');
+    if(name)name.textContent='Loading account...';if(email)email.textContent='';
+    var bottom=document.getElementById('shellBottom');if(bottom)bottom.innerHTML=bottomHtml(active);
+    var loading=document.createElement('div');loading.id='shellLoading';loading.setAttribute('role','status');
+    loading.textContent='Loading your account data...';
+    loading.style.cssText='position:fixed;top:72px;right:16px;z-index:1001;padding:6px 12px;border-radius:8px;background:#242424;color:#b0b0b0;font:12px system-ui';
+    document.body.appendChild(loading);
+    var drawer=document.getElementById('mobileNav');if(drawer)drawer.querySelector('.mobile-nav').innerHTML=drawerHtml(active);
+    wireDrawer();
+    if(global.lucide)global.lucide.createIcons();
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',frame);else frame();
 })(window);

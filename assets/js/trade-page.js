@@ -15,6 +15,8 @@
 
   var MODE = document.body.getAttribute('data-mode') === 'demo' ? 'demo' : 'real';
   var DEMO_START = 100000;
+  var REMOTE = MODE==='real' && A.isRemote && A.isRemote();
+  var submitting=false;
 
   /* demo funds are kept out of the real account entirely */
   var K = MODE === 'demo'
@@ -25,7 +27,7 @@
 
   var PAIRS = (F.instruments || F.coins.map(function (c) { return { sym: c.sym, name: c.name }; })).map(function (i) {
     return { sym: i.sym, name: i.name, group: i.group, venue: i.venue, label: F.pairLabel ? F.pairLabel(i.sym) : i.sym + '/USDT' };
-  });
+  }).filter(function(p){return !REMOTE || p.group==='crypto';});
 
   var TF = ['1m', '5m', '15m', '1h', '4h', '1d', '1w'];
   var TF_LABEL = { '1m': '1m', '5m': '5m', '15m': '15m', '1h': '1H', '4h': '4H', '1d': '1D', '1w': '1W' };
@@ -53,8 +55,10 @@
     return A.cash();
   }
   function setBalance(v) {
-    if (MODE === 'demo') A.writeJSON(K.bal, v);
-    else A.setCash(v);
+    if (v!==balance()) {
+      if (MODE === 'demo') A.writeJSON(K.bal, v);
+      else if (!REMOTE) A.setCash(v);
+    }
     var b = $('#balance');
     if (b) b.textContent = fmtUSD(v).slice(1);
   }
@@ -303,10 +307,12 @@
       if (a) a.textContent = fmtUSD(amt);
       if (u) u.textContent = durLabel(d.seconds);
       if (p) p.textContent = '+' + fmtUSD(amt * d.profitPct / 100);
+      var loss=document.getElementById('sumLoss');if(loss)loss.textContent='-'+fmtUSD(amt*d.profitPct/100);
     } else {
       if (a) a.textContent = '\u2014';
       if (u) u.textContent = '\u2014';
       if (p) p.textContent = '\u2014';
+      var loss=document.getElementById('sumLoss');if(loss)loss.textContent='\u2014';
     }
   }
 
@@ -319,7 +325,8 @@
     updateSummary();
   }
 
-  function placeTrade(dir) {
+  async function placeTrade(dir) {
+    if (submitting) return;
     var amt = getAmount();
     var bal = balance();
     if (amt <= 0) { toast('Please enter a valid amount', 'var(--red)'); return; }
@@ -327,6 +334,21 @@
     if (!S.price) { toast('Waiting for a live price', 'var(--red)'); return; }
 
     var d = durInfo();
+    if (REMOTE) {
+      submitting=true;
+      $('#btnUp').disabled=true;$('#btnDown').disabled=true;
+      try {
+        var placed=await global.BitbaseServerTrades.place({sym:PAIRS[S.idx].sym,dir:dir,amt:amt,dur:d.seconds});
+        S.positions=loadPositions().filter(function(p){return p.status==='Active' || p.status==='Review';});
+        setBalance(balance());renderPositions();
+        showPanel(placed);
+        if (placed.status!=='Active') showResult(placed);
+        toast('Trade accepted. It will settle automatically even with this page closed.','var(--green)');
+        $('#amtInput').value='';updateSummary();
+      } catch(e) { toast(e.message || 'Trade could not be confirmed. Retry the same order.','var(--red)'); }
+      finally { submitting=false;$('#btnUp').disabled=false;$('#btnDown').disabled=false; }
+      return;
+    }
     setBalance(bal - amt);
     /* The symbol travels with the contract so any page can price it later,
        not just this one. */
@@ -359,9 +381,18 @@
     updateSummary();
   }
 
-  function closePos(id) {
+  async function closePos(id) {
     var pos = S.positions.filter(function (p) { return p.id === id; })[0];
     if (!pos || pos.status !== 'Active') return;
+    if (REMOTE) {
+      try {
+        var closed=await global.BitbaseServerTrades.close(pos.contractId);
+        S.positions=loadPositions().filter(function(p){return p.status==='Active' || p.status==='Review';});
+        setBalance(balance());renderPositions();showResult(closed);
+        toast('Trade '+closed.status.toLowerCase()+'. Returned '+fmtUSD(closed.payout),'var(--green)');
+      } catch(e) { toast(e.message || 'Could not close the trade.','var(--red)'); }
+      return;
+    }
     pos.status = 'Closed';
     pos.exitPrice = S.price;
     pos.refund = Math.round(pos.amt * 0.5 * 100) / 100;
@@ -380,6 +411,7 @@
      sees when it happens, using the price already on screen. */
   var settling = false;
   function settleExpired() {
+    if (REMOTE) return;
     if (settling) return;
     var due = global.BitbaseTrades.due(MODE);
     if (!due.length) return;
@@ -423,10 +455,10 @@
         '<td class="' + (p.dir === 'UP' ? 'dir-up' : 'dir-down') + '">' + p.dir + '</td>' +
         '<td>' + fmtUSD(p.amt) + '</td>' +
         '<td>' + durLabel(p.dur) + '</td>' +
-        '<td>' + countdown(left) + '</td>' +
+        '<td>' + (p.status==='Review' ? 'Review required' : left<=0 && REMOTE ? 'Settling...' : countdown(left)) + '</td>' +
         '<td style="color:var(--green);">+' + fmtUSD(p.profit) + '</td>' +
         '<td><span class="status-active">' + p.status + '</span></td>' +
-        '<td><button data-close="' + p.id + '" style="font-size:11px;color:var(--red);background:none;border:none;cursor:pointer;">Close</button></td>' +
+        '<td>' + (p.status==='Active' && left>0 ? '<button data-close="' + p.id + '" style="font-size:11px;color:var(--red);background:none;border:none;cursor:pointer;">Close</button>' : '\u2014') + '</td>' +
       '</tr>';
     }).join('');
     $$('[data-close]', body).forEach(function (b) {
@@ -441,7 +473,7 @@
       var cell = body.querySelectorAll('tr')[i];
       if (!cell) return;
       var left = Math.max(0, p.dur * 1000 - (Date.now() - p.startTime));
-      cell.children[5].textContent = countdown(left);
+      cell.children[5].textContent = p.status==='Review' ? 'Review required' : left<=0 && REMOTE ? 'Settling...' : countdown(left);
     });
     var panel = S.activePanel;
     if (panel) {
@@ -451,7 +483,7 @@
       var ms = Math.max(0, p.dur * 1000 - (Date.now() - p.startTime));
       var frac = p.dur ? ms / (p.dur * 1000) : 0;
       if (ring) ring.style.strokeDashoffset = String(panel.circumference * (1 - frac));
-      if (text) text.textContent = countdown(ms);
+      if (text && !panel.showedResult) text.textContent = ms<=0 && REMOTE ? 'Settling...' : countdown(ms);
       /* At zero, hand over to settlement rather than closing: closing here
          would beat showResult() to the panel and the user would never see the
          outcome. Only tidy up if the trade is already gone and no result was
@@ -513,7 +545,7 @@
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px;">' +
         tile('Amount', fmtUSD(pos.amt)) +
         tile('Potential Profit', '+' + fmtUSD(pos.profit), '#16c784') +
-        tile('Entry Price', fmtP(pos.entryPrice)) +
+        tile('Entry Price', pos.entryPrice ? fmtP(pos.entryPrice) : 'Confirming...') +
         tile('Duration', durLabel(pos.dur)) +
       '</div>' +
       '<div style="text-align:center;font-size:11px;color:rgba(255,255,255,.3);">Result will appear when trade closes...</div>';
@@ -529,7 +561,8 @@
     if (!S.activePanel || S.activePanel.id !== pos.id) return;
     S.activePanel.showedResult = true;
     var won = pos.won;
-    var color = won ? '#16c784' : '#ea3943';
+    var neutral=pos.status==='Draw' || pos.status==='Closed' || pos.status==='Cancelled';
+    var color = neutral ? '#f7931a' : won ? '#16c784' : '#ea3943';
     var bg = won ? 'rgba(22,199,132,.08)' : 'rgba(234,57,67,.08)';
     var icon = won
       ? '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#16c784" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>'
@@ -540,11 +573,11 @@
     document.getElementById('tradePanelBody').innerHTML =
       '<div style="padding:24px 20px;text-align:center;">' +
         '<div style="margin-bottom:16px;">' + icon + '</div>' +
-        '<div style="font-size:22px;font-weight:700;margin-bottom:4px;color:' + color + ';">' + (won ? 'Trade Won!' : 'Trade Lost') + '</div>' +
+        '<div style="font-size:22px;font-weight:700;margin-bottom:4px;color:' + color + ';">' + (pos.status==='Cancelled' ? 'Trade Cancelled' : pos.status==='Draw' ? 'Trade Drawn' : pos.status==='Closed' ? 'Trade Closed' : won ? 'Trade Won!' : 'Trade Lost') + '</div>' +
         '<div style="font-size:13px;color:rgba(255,255,255,.5);margin-bottom:20px;">' + pos.pair + ' &bull; ' + pos.dir + '</div>' +
         '<div style="background:' + bg + ';border:1px solid ' + color + '33;border-radius:12px;padding:16px;margin-bottom:16px;">' +
-          '<div style="font-size:32px;font-weight:700;font-family:\'IBM Plex Mono\',monospace;color:' + color + ';margin-bottom:4px;">' + (won ? '+' : '-') + fmtUSD(net) + '</div>' +
-          '<div style="font-size:12px;color:rgba(255,255,255,.5);">' + (won ? 'Profit earned' : 'Amount lost') + '</div>' +
+          '<div style="font-size:32px;font-weight:700;font-family:\'IBM Plex Mono\',monospace;color:' + color + ';margin-bottom:4px;">' + ((pos.status==='Draw' || pos.status==='Cancelled') ? '' : won ? '+' : '-') + fmtUSD(net) + '</div>' +
+          '<div style="font-size:12px;color:rgba(255,255,255,.5);">' + ((pos.status==='Draw' || pos.status==='Cancelled') ? 'Stake returned' : won ? 'Profit earned' : 'Amount lost') + '</div>' +
         '</div>' +
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:20px;">' +
           tile('Amount', fmtUSD(pos.amt)) + tile('Duration', durLabel(pos.dur)) +
@@ -601,7 +634,7 @@
       if (i >= 0) S.idx = i;
     }
 
-    S.positions = loadPositions().filter(function (p) { return p.status === 'Active'; });
+    S.positions = loadPositions().filter(function (p) { return p.status === 'Active' || p.status==='Review'; });
     setBalance(balance());
     renderPositions();
     updateSummary();
@@ -645,11 +678,21 @@
        sweep while this tab is sitting here. Keep the table honest either way. */
     global.addEventListener('bitbase:settled', function (e) {
       var done = e && e.detail;
-      if (done && S.activePanel && S.activePanel.id === done.id) { removePanel(); return; }
+      if (done && done.mode===MODE && S.activePanel && S.activePanel.id === done.id) showResult(done);
       S.positions = loadPositions().filter(function (p) { return p.status === 'Active'; });
       setBalance(balance());
       renderPositions();
       updateSummary();
+    });
+    global.addEventListener('bitbase:data', function () {
+      S.positions=loadPositions().filter(function(p){return p.status==='Active' || p.status==='Review';});
+      if (S.activePanel && !S.activePanel.showedResult) {
+        var id=S.activePanel.id;
+        var changed=(A.readJSON(K.hist,[]) || []).find(function(p){return p.id===id;});
+        if (changed && changed.status!=='Active' && changed.status!=='Review') showResult(changed);
+        else if (changed && changed.entryPrice && !S.activePanel.pos.entryPrice) showPanel(changed);
+      }
+      setBalance(balance());renderPositions();updateSummary();
     });
   }
 

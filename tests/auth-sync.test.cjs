@@ -112,6 +112,7 @@ test('poll fallback refreshes admin data when realtime events are unavailable',a
   const f=fixture(t),o=f.server.seed('admin@example.test',true),a=f.open(o);await a.DB.ready;
   // Allow the initial subscribed refresh to finish, then disable all event delivery.
   await new Promise(r=>setTimeout(r,100));f.server.emit=()=>{};
+  a.client.channels[0].stateCallback('CLOSED');
   const u=f.server.seed('poll-only@example.test');
   // The fallback poll is deliberately slow: realtime covers the normal case in
   // milliseconds, so a fast poll only competed with the page for bandwidth.

@@ -8,21 +8,12 @@
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="assets/css/app.css">
   <link rel="stylesheet" href="assets/css/pages.css">
-  <link rel="preconnect" href="https://cdn.tailwindcss.com" crossorigin>
-  <link rel="preconnect" href="https://unpkg.com" crossorigin>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/lucide@latest"></script>
+  <link rel="stylesheet" href="assets/css/utilities.css">
+  <script defer src="assets/vendor/lucide.min.js"></script>
+  <script defer src="assets/js/icons.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <script>
-    tailwind.config = {
-      theme: { extend: {
-        colors: { dark: '#0f0f0f', 'dark-card': '#1a1a1a', 'dark-border': '#2a2a2a', accent: '#f7931a', 'accent-hover': '#e88417' },
-        fontFamily: { heading: ['Space Grotesk', 'sans-serif'], body: ['Inter', 'sans-serif'], mono: ['IBM Plex Mono', 'monospace'] }
-      } }
-    }
-  </script>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
   <style>
     [data-theme="light"] { --bg-primary:#f5f5f5; --bg-secondary:#fff; --bg-tertiary:#e8e8e8; --bg-glass:rgba(255,255,255,.92); --text-primary:#1a1a1a; --text-secondary:#555; --text-tertiary:#999; --border-subtle:rgba(0,0,0,.06); --border-medium:rgba(0,0,0,.1); --border-glow:rgba(247,147,26,.4); }
     [data-theme="light"] body, [data-theme="light"] .page-body { background:#f5f5f5; color:#1a1a1a; }
@@ -173,11 +164,13 @@
         <div class="summary-card">
           <div class="summary-row"><span class="sr-label">Trade Amount</span><span class="sr-val" id="sumAmt">&mdash;</span></div>
           <div class="summary-row"><span class="sr-label">Duration</span><span class="sr-val" id="sumDur">&mdash;</span></div>
+          <div class="summary-row"><span class="sr-label">Possible Loss</span><span class="sr-val" id="sumLoss" style="color:var(--red);">&mdash;</span></div>
           <div class="summary-row"><span class="sr-label">Potential Profit</span><span class="sr-val" id="sumProfit" style="color:var(--green);">&mdash;</span></div>
         </div>
       </div>
 
       <div class="tp-section">
+        <p style="font-size:11px;line-height:1.5;color:var(--text-secondary);margin:10px 0;">Crypto contracts use Binance USDT prices. Settlement continues with the page closed and may take a few seconds after expiry. Equal prices return your stake. Early closure returns 50% after entry is confirmed.</p>
         <div class="trade-btns">
           <button class="btn-up" id="btnUp">BUY / UP &#8593;&#8593;</button>
           <button class="btn-down" id="btnDown">SELL / DOWN &#8595;</button>
@@ -193,6 +186,7 @@
 <script src="assets/js/db.js"></script>
 <script src="assets/js/auth.js"></script>
 <script src="assets/js/data.js"></script>
+<script src="assets/js/server-trades.js"></script>
 <script src="assets/js/trades.js"></script>
 <script src="assets/js/chart.js"></script>
 <script src="assets/js/shell.js"></script>

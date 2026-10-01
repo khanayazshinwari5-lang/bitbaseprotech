@@ -38,7 +38,7 @@ class Server {
     c.from=t=>new Query(server,c,t);
     c.rpc=async name=>{if(name!=='ensure_my_profile'||!c.current)return {error:{message:'Forbidden'}};return {data:clone(server.profile(c.current.user)),error:null};};
     c.channel=name=>{
-      const ch={name,listeners:[],active:false,on(event,filter,cb){this.listeners.push({filter,cb});return this;},subscribe(cb){this.active=true;cb('SUBSCRIBED');return this;}};c.channels.push(ch);return ch;
+      const ch={name,listeners:[],active:false,on(event,filter,cb){this.listeners.push({filter,cb});return this;},subscribe(cb){this.active=true;this.stateCallback=cb;cb('SUBSCRIBED');return this;}};c.channels.push(ch);return ch;
     };
     c.removeChannel=ch=>{ch.active=false;return Promise.resolve();};
     c.refreshToken=()=>change('TOKEN_REFRESHED',c.current.user);
@@ -111,16 +111,16 @@ class Query {
 }
 function storage(initial={}){const m=new Map(Object.entries(initial));return {getItem:k=>m.get(k)??null,setItem:(k,v)=>m.set(k,String(v)),removeItem:k=>m.delete(k),get length(){return m.size;},key:i=>[...m.keys()][i]};}
 function element(tag){const e=new EventTarget();return Object.assign(e,{tagName:tag.toUpperCase(),style:{},children:[],classList:{add(){},remove(){},toggle(){}},setAttribute(){},appendChild(ch){this.children.push(ch);this.firstChild=this.children[0];ch.parent=this;},remove(){if(this.parent)this.parent.children=this.parent.children.filter(x=>x!==this);},textContent:''});}
-function app(server,user=null,{local={},unavailable=false}={}){
+function app(server,user=null,{local={},unavailable=false,page='',pollMs=15000}={}){
   const timers=new Set();
   const timeout=(fn,ms)=>{const t=setTimeout(fn,ms);t.unref();timers.add(t);return t;};
-  const interval=(fn,ms)=>{const t=setInterval(fn,ms);t.unref();timers.add(t);return t;};
+  const interval=(fn,ms)=>{const t=setInterval(fn,ms===15000?pollMs:ms);t.unref();timers.add(t);return t;};
   const window=new EventTarget(),document=new EventTarget();document.body=element('body');document.head=element('head');document.hidden=false;document.readyState='complete';document.createElement=element;
   document.getElementById=id=>{const find=e=>e.id===id?e:e.children?.map(find).find(Boolean);return find(document.body)||null;};
   const client=server.client(user);
   Object.assign(window,{window,globalThis:window,document,console:{warn(){}},crypto,CustomEvent,Event,EventTarget,AbortController,Set,TextEncoder,Uint8Array,URL,Promise,
     setTimeout:timeout,clearTimeout,setInterval:interval,clearInterval,localStorage:storage(local),sessionStorage:storage(),
-    location:{origin:'https://example.test',href:'https://example.test/login.html'},
+    location:{origin:'https://example.test',href:'https://example.test/'+(page||'login.html'),pathname:page?'/'+page:undefined},
     BITBASE_CONFIG:{supabaseUrl:'https://project.test',supabaseAnonKey:'test-anon',useSupabase:true},
     supabase:{createClient(){if(unavailable)throw new Error('Service unreachable');return client;}},fetch:async()=>({ok:true})});
   const context=vm.createContext(window);

@@ -93,7 +93,8 @@
     });
     return v;
   }
-  function totalValue() { return holdingsValue() + A.cash(); }
+  function reservedCash() { return (A.readJSON('bb_trade_positions',[]) || []).reduce(function(sum,p){return sum+(p.status==='Active'?num(p.amt):0);},0); }
+  function totalValue() { return holdingsValue() + A.cash() + reservedCash(); }
   function cryptoQty() {
     var n = 0;
     COINS.forEach(function (c) { if (c.symbol !== 'USDT' && qtyOf(c.symbol) > 0) n++; });
@@ -190,7 +191,7 @@
   /* --------------------------------------------------------- render stats */
   function renderStats() {
     var held = holdingsValue();
-    var total = held + A.cash();
+    var total = held + A.cash() + reservedCash();
     var pnl = tradePnL();
     var pct = total > 0 ? (pnl / total * 100) : 0;
     var pos = pnl >= 0;

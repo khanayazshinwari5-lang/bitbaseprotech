@@ -1,28 +1,6 @@
-/* ==========================================================================
-   Bitbase - open contract settlement
-
-   Placing a duration contract takes the stake out of the balance; settling
-   gives it back plus or minus the profit percentage. That used to live only
-   inside the trade page, which left two things broken:
-
-     - a user who navigated away or refreshed left the stake held with nothing
-       left to settle it, so the money was simply gone;
-     - a contract whose time ran out while the page was still loading was
-       decided against a price of zero. Zero is never above the entry price, so
-       every DOWN contract read as a winner and paid the stake back *with*
-       profit the moment the page opened.
-
-   This module owns the rule so every page settles identically, and it is the
-   single place that decides what a contract is worth:
-
-       win  -> balance += stake + profit
-       loss -> balance += stake - profit
-
-   The stake comes back either way, so a loss costs exactly the profit
-   percentage rather than the whole amount and a win and a loss are mirror
-   images. A contract is never decided without a real price: if none can be
-   had, it stays open and the next sweep tries again.
-   ========================================================================== */
+/* Real contracts: PostgreSQL owns placement, expiry and payout after all browsers close.
+   This module observes their result. Local/demo arithmetic is retained for practice only.
+   A win returns stake + profit; a loss returns stake - profit; an equal price returns the stake. */
 (function (global) {
   'use strict';
 
@@ -37,6 +15,7 @@
 
   function num(v) { var n = parseFloat(v); return isFinite(n) ? n : 0; }
   function book(mode) { return BOOK[mode === 'demo' ? 'demo' : 'real']; }
+  function serverMode(mode) { return mode!=='demo' && A.isRemote && A.isRemote(); }
 
   /* ------------------------------------------------------------- balances */
   function balance(b) {
@@ -60,8 +39,7 @@
     return openPositions(mode).filter(function (p) { return isDue(p, t); });
   }
 
-  /* An admin can flag an account so every contract settles as a win. It writes
-     the same field the market does, so nothing downstream needs a special case. */
+  /* Practice-only override. The server never uses this flag for real outcomes. */
   function forcedWin() {
     var rec = A.currentUser() || {};
     return rec.profitMode === true;
@@ -77,7 +55,7 @@
   }
   /* The net effect on the balance compared with before the trade was placed,
      which is what a person reads as "I won" or "I lost". */
-  function netOf(p) { var won = p.status === 'Won' || p.won === true; return won ? num(p.profit) : -num(p.profit); }
+  function netOf(p) { if(p.net!=null)return num(p.net);if(['Active','Review','Draw','Cancelled'].indexOf(p.status)!==-1)return 0;return payout(p,p.status==='Won' || p.won===true)-num(p.amt); }
 
   /* -------------------------------------------------------------- history */
   function saveTrade(mode, rec) {
@@ -91,6 +69,7 @@
   /* Settle one contract. Returns the settled record, or null when there was
      nothing to settle - no stake, or no real price to judge it against. */
   function settleOne(mode, p, price) {
+    if (serverMode(mode) || !isDue(p,Date.now())) return null;
     var b = book(mode);
     var amt = num(p.amt);
     if (!(amt > 0)) return null;
@@ -103,18 +82,19 @@
     });
     if (!stillOpen) return null;
 
-    var forced = forcedWin();
+    var forced = mode==='demo' && forcedWin();
     var rise = num(price) > num(p.entryPrice);
     var won = forced ? true : (p.dir === 'UP' ? rise : !rise);
-    var pay = payout(p, won);
+    var draw = !forced && num(price) === num(p.entryPrice);
+    var pay = draw ? amt : payout(p, won);
 
     var done = {};
     Object.keys(p).forEach(function (k) { done[k] = p[k]; });
     done.exitPrice = num(price);
-    done.won = won;
-    done.status = won ? 'Won' : 'Lost';
+    done.won = !draw && won;
+    done.status = draw ? 'Draw' : won ? 'Won' : 'Lost';
     done.payout = pay;
-    done.net = won ? num(p.profit) : -num(p.profit);
+    done.net = pay - amt;
     done.settledAt = Date.now();
     if (forced) done.forced = true;
 
@@ -129,6 +109,7 @@
      Promise<number>; returning 0 leaves that contract open for the next sweep.
      Sequential on purpose: the balance is read and written once per contract. */
   function settleDue(mode, priceFor) {
+    if (serverMode(mode)) return Promise.resolve([]);
     var due = duePositions(mode);
     if (!due.length) return Promise.resolve([]);
     var settled = [];
@@ -200,6 +181,7 @@
      `onSettled` is called with each settled record so a page can say so. */
   function watch(mode, opts) {
     opts = opts || {};
+    if (serverMode(mode)) return watchServer(opts);
     var running = false, timer = null;
     function sweep() {
       if (running) return;
@@ -217,6 +199,30 @@
     global.addEventListener('pagehide', sweep);
     document.addEventListener('visibilitychange', function () { if (!document.hidden) sweep(); });
     return { sweep: sweep, stop: function () { if (timer) clearInterval(timer); timer = null; } };
+  }
+
+  function watchServer(opts) {
+    var active={}, stopped=false, lastPoll=0;
+    function observe() {
+      if (stopped) return;
+      var history=A.readJSON(BOOK.real.hist,[]) || [];
+      history.forEach(function (p) {
+        if (active[p.id] && p.status!=='Active' && p.status!=='Review') {
+          delete active[p.id];
+          if (opts.onSettled) opts.onSettled(p);
+        }
+      });
+      openPositions('real').forEach(function (p) { active[p.id]=true; });
+    }
+    function sweep() {
+      if (stopped || document.hidden || Date.now()-lastPoll<5000 || !duePositions('real').length) return;
+      lastPoll=Date.now();
+      if (global.BitbaseDB) global.BitbaseDB.refresh().catch(function () {});
+    }
+    observe();
+    global.addEventListener('bitbase:data',observe);
+    var timer=setInterval(sweep,5000);
+    return {sweep:sweep,stop:function(){stopped=true;clearInterval(timer);global.removeEventListener('bitbase:data',observe);}};
   }
 
   global.BitbaseTrades = {

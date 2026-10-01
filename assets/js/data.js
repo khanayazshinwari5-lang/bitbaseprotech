@@ -25,8 +25,8 @@
     { sym: 'LTC',  name: 'Litecoin', color: '#a6a9aa', supply: 75000000,     cb: 'LTC-USD',  kr: 'LTCUSD'  }
   ];
 
-  var BINANCE_REST = 'https://api.binance.com/api/v3';
-  var BINANCE_WS   = 'wss://stream.binance.com:9443/stream?streams=';
+  var BINANCE_REST = 'https://data-api.binance.vision/api/v3';
+  var BINANCE_WS   = 'wss://data-stream.binance.vision/stream?streams=';
   var CB_REST      = 'https://api.exchange.coinbase.com';
   var KR_REST      = 'https://api.kraken.com/0/public';
 
@@ -52,29 +52,34 @@
 
   function fetchJSON(url, timeout) {
     var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    var t = setTimeout(function () { if (ctrl) ctrl.abort(); }, timeout || 9000);
+    var t = setTimeout(function () { if (ctrl) ctrl.abort(); }, timeout || 5500);
     return fetch(url, ctrl ? { signal: ctrl.signal } : undefined)
       .then(function (r) {
-        clearTimeout(t);
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       })
-      .catch(function (e) { clearTimeout(t); throw e; });
+      .finally(function () { clearTimeout(t); });
   }
 
   /* Small response cache – several widgets ask for the same URL, and some
      providers (Kraken) throttle bursts of identical calls. */
-  var cch = {};
+  var cch = {}, pendingFetch = {};
   function cached(url, ttl) {
-    var hit = cch[url];
-    var now = Date.now();
-    if (hit && now - hit.at < (ttl || 8000)) return Promise.resolve(hit.val);
-    return fetchJSON(url).then(function (v) {
-      cch[url] = { at: Date.now(), val: v };
-      return v;
-    }).catch(function (e) {
-      if (hit) return hit.val;            // serve stale rather than nothing
-      throw e;
+    var hit=cch[url];
+    if (hit && Date.now()-hit.at<(ttl || 8000)) return Promise.resolve(hit.val);
+    if (pendingFetch[url]) return pendingFetch[url];
+    pendingFetch[url]=fetchJSON(url).then(function(v){cch[url]={at:Date.now(),val:v};return v;})
+      .catch(function(e){if(hit && Date.now()-hit.at<60000)return hit.val;throw e;})
+      .finally(function(){delete pendingFetch[url];});
+    return pendingFetch[url];
+  }
+  // Start a backup shortly after the primary; a blocked venue no longer holds up every widget.
+  function firstFeed(primary, backups) {
+    return new Promise(function(resolve,reject) {
+      var done=false,started=false,left=1+backups.length,lastError,timer;
+      function run(fn) { Promise.resolve().then(fn).then(function(v){if(!done){done=true;clearTimeout(timer);resolve(v);}},function(e){lastError=e;if(--left===0&&!done)reject(lastError);if(!started)startBackups();}); }
+      function startBackups(){if(started || done)return;started=true;backups.forEach(run);}
+      timer=setTimeout(startBackups,800);run(primary);
     });
   }
 
@@ -87,7 +92,7 @@
      rejected before it leaves the page. */
   function fetchPOST(url, body, timeout) {
     var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    var t = setTimeout(function () { if (ctrl) ctrl.abort(); }, timeout || 9000);
+    var t = setTimeout(function () { if (ctrl) ctrl.abort(); }, timeout || 5500);
     return fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
@@ -95,11 +100,10 @@
       signal: ctrl ? ctrl.signal : undefined
     })
       .then(function (r) {
-        clearTimeout(t);
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       })
-      .catch(function (e) { clearTimeout(t); throw e; });
+      .finally(function () { clearTimeout(t); });
   }
 
   /* Same idea as cached(), but for POST bodies that cannot live in a URL. */
@@ -214,9 +218,9 @@
   function coinbaseTickers() {
     var targets = COINS.filter(function (c) { return !!c.cb; });
     var out = {};
-    var i = 0;
+    var i = 0, deadline=Date.now()+5000;
     function worker() {
-      if (i >= targets.length) return Promise.resolve();
+      if (i >= targets.length || Date.now()>deadline) return Promise.resolve();
       var c = targets[i++];
       return cached(CB_REST + '/products/' + c.cb + '/stats', 8000).then(function (s) {
         var last = num(s.last), open = num(s.open);
@@ -303,18 +307,15 @@
     return v ? hydrate(v.state) : null;
   }
 
+  var marketsJob=null;
   function loadMarkets() {
-    return binanceTickers()
-      .then(function (r) { marketSource = 'Binance'; return r; })
-      .catch(function () {
-        return krakenTickers()
-          .then(function (r) { marketSource = 'Kraken'; return r; })
-          .catch(function () {
-            return coinbaseTickers()
-              .then(function (r) { marketSource = 'Coinbase'; return r; })
-              .catch(function () { marketSource = 'demo'; return demoRows(); });
-          });
-      })
+    if(marketsJob)return marketsJob;
+    marketsJob=firstFeed(
+      function(){return binanceTickers().then(function(r){return {raw:r,source:'Binance'};});},
+      [function(){return krakenTickers().then(function(r){return {raw:r,source:'Kraken'};});},
+       function(){return coinbaseTickers().then(function(r){return {raw:r,source:'Coinbase'};});}])
+      .catch(function(){return {raw:demoRows(),source:'demo'};})
+      .then(function(result){marketSource=result.source;return result.raw;})
       .then(function (raw) {
         marketState = raw;
         store();
@@ -324,7 +325,8 @@
           global.dispatchEvent(new global.CustomEvent('bitbase:markets', { detail: { rows: rows } }));
         }
         return rows;
-      });
+      }).finally(function(){marketsJob=null;});
+    return marketsJob;
   }
 
   function pollMarkets() {
@@ -454,17 +456,11 @@
     // through the crypto path, they would come back as unrelated data.
     var inst = instrument(sym);
     if (inst && inst.group !== 'crypto') return loadInstrumentCandles(inst, interval);
-    return binanceKlines(sym, interval)
-      .then(function (c) { return { candles: c, source: 'Binance' }; })
-      .catch(function () {
-        return coinbaseCandles(sym, interval)
-          .then(function (c) { return { candles: c, source: 'Coinbase' }; })
-          .catch(function () {
-            return krakenCandles(sym, interval)
-              .then(function (c) { return { candles: c, source: 'Kraken' }; })
-              .catch(function () { return { candles: demoCandles(sym, interval), source: 'Demo feed' }; });
-          });
-      });
+    return firstFeed(
+      function(){return binanceKlines(sym,interval).then(function(c){return {candles:c,source:'Binance'};});},
+      [function(){return coinbaseCandles(sym,interval).then(function(c){return {candles:c,source:'Coinbase'};});},
+       function(){return krakenCandles(sym,interval).then(function(c){return {candles:c,source:'Kraken'};});}])
+      .catch(function(){return {candles:demoCandles(sym,interval),source:'Demo feed'};});
   }
 
   /* Kraken publishes real OHLC for the FX pairs, so forex charts are genuine

@@ -43,6 +43,7 @@
      status decides. */
   function netOf(t) {
     if (t.net !== undefined && t.net !== null && isFinite(t.net)) return num(t.net);
+    if (['Active','Review','Draw','Cancelled'].indexOf(t.status)!==-1) return 0;
     return t.status === 'Won' ? num(t.profit) : -num(t.profit);
   }
 
@@ -67,7 +68,7 @@
           ['Exit price', t.exitPrice ? num(t.exitPrice).toLocaleString('en-US') : '\u2014'],
           ['Profit percentage', t.amt > 0 ? ((num(t.profit) / num(t.amt)) * 100).toFixed(0) + '%' : '\u2014'],
           ['Returned to balance', closed ? fmtUSD(num(t.refund)) : (t.status === 'Active' ? '\u2014' : fmtUSD(num(t.payout !== undefined ? t.payout : num(t.amt) + (won ? num(t.profit) : -num(t.profit)))) )],
-          ['Result', won ? 'Won' : closed ? 'Closed early (50% refund)' : t.status === 'Lost' ? 'Lost' : 'In progress']
+          ['Result', won ? 'Won' : closed ? 'Closed early (50% refund)' : t.status === 'Lost' ? 'Lost' : t.status === 'Draw' ? 'Draw (stake returned)' : t.status === 'Review' ? 'Legacy balance review required' : t.status === 'Cancelled' ? 'Cancelled (stake returned)' : 'In progress']
         ]
       };
     });

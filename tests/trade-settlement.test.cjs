@@ -7,11 +7,12 @@ const {Server,app}=require('./fake-supabase.cjs');
 const root=path.resolve(__dirname,'..');
 const cash=v=>Math.round(Number(v)*100)/100;
 
-/* Loads the settlement module over a live session, the way a page does. */
+/* Browser-only legacy/offline arithmetic. Real contracts are tested separately and never use this path. */
 function withTrades(t,seed,fn){
   const s=new Server(),user=s.seed('trader@example.test'),a=app(s,user);
   t.after(()=>a.close());
   return a.DB.ready.then(()=>{
+    a.A.isRemote=()=>false;
     if(seed)a.A.adminSetCash(a.A.currentUser().uid,seed);
     a.window.BitbaseFeed={
       coins:[],instruments:[{sym:'BTC',group:'crypto'}],
@@ -132,24 +133,6 @@ test('two sweeps racing over one contract pay out once',async t=>{
   });
 });
 
-test('profit mode settles as a win whatever the market did',async t=>{
-  await withTrades(t,1000,(a,T)=>{
-    const uid=a.A.currentUser().uid;
-    const map=a.A.readJSON(a.A.KEYS.users,{});
-    map[uid].profitMode=true;
-    a.A.writeJSON(a.A.KEYS.users,map);
-    // Price far below the entry, so an UP contract would normally lose.
-    a.window.__prices={sym:'BTC',price:100};
-    place(a,T,{id:'T-1',dir:'UP',amt:200,profit:60});
-    return T.settleDue('real',T.pricer()).then(settled=>{
-      assert.equal(settled.length,1);
-      assert.equal(settled[0].status,'Won');
-      assert.equal(settled[0].forced,true,'the win is not marked as forced');
-      assert.equal(cash(a.A.cash()),1060);
-    });
-  });
-});
-
 test('paying out is clamped to double the stake at the very least',async t=>{
   await withTrades(t,0,(a,T)=>{
     // A 24h contract can carry a 100% profit: a loss returns nothing rather
@@ -163,10 +146,11 @@ test('paying out is clamped to double the stake at the very least',async t=>{
 
 /* The user's scenario: a contract is running, the user leaves the trade page,
    and the next page they open is the one that closes it. */
-test('a contract left running is settled by the next page, not the trade page',async t=>{
+test('offline mode settles a due contract when a page is opened',async t=>{
   const s=new Server(),user=s.seed('leaver@example.test'),a=app(s,user);
   t.after(()=>a.close());
   await a.DB.ready;
+  a.A.isRemote=()=>false;
   const uid=a.A.currentUser().uid;
   a.A.adminSetCash(uid,1000);
   a.A.writeJSON('bb_trade_positions',[

@@ -323,12 +323,11 @@
               toggle(a.admin, 'data-admin', a.uid, true) +
               '<span class="am-pill orange" title="First admin - holds every permission">1st admin</span></div>'
           : toggle(a.admin, 'data-admin', a.uid)) + '</td>' +
-        /* Profit Mode: flipping it here forces every contract for that account
-           to settle as a win. The realised P/L still shows underneath. */
+        /* The switch affects practice trades only. Real results are server-managed. */
         '<td><div style="display:flex;flex-direction:column;gap:5px;">' +
           '<span class="am-togwrap">' +
             '<button class="am-toggle' + (a.profitMode ? ' on' : '') + '" data-profit="' + esc(a.uid) + '" ' +
-              'aria-label="Toggle profit mode"></button>' +
+              'aria-label="Toggle demo profit mode"></button>' +
             '<span class="lab">' + (a.profitMode ? 'ON' : 'OFF') + '</span>' +
           '</span>' +
           '<span class="am-mono ' + (a.profit >= 0 ? 'am-num-green' : 'am-num-red') + '">' +
@@ -360,7 +359,7 @@
         search +
         '<button class="am-btn primary" id="amUserRefresh">Refresh now</button>' +
       '</div>' +
-      table(['UID', 'Name', 'Email', 'Cash Balance', 'Total Assets', 'Admin', 'Profit Mode', 'KYC', 'Status', 'Actions'],
+      table(['UID', 'Name', 'Email', 'Cash Balance', 'Total Assets', 'Admin', 'Demo Profit Mode', 'KYC', 'Status', 'Actions'],
         rows, 'No accounts match this filter.');
   }
   /* 'approved' is what a decided submission writes; 'verified' is the older
@@ -1639,8 +1638,8 @@
             'placeholder="Asked for on every change"></div>' +
       '</div>' +
       (mayEdit
-        ? switchRow('edProfit', !!a.rec.profitMode, 'Profit Mode',
-            'Force every contract for this user to settle as a win')
+        ? switchRow('edProfit', !!a.rec.profitMode, 'Demo Profit Mode',
+            'Practice trades only. Real contracts always follow the recorded market prices.')
         : (isSelf
             ? '<div class="am-note">These are your own account details. Changing them, and ' +
                 'everything else on this form, needs the first admin - the switch below is the ' +
@@ -2076,7 +2075,7 @@
         toast(shortId(uid) + (on ? ' promoted to admin' : ' admin revoked'), on ? 'ok' : 'bad');
       });
     });
-    /* Profit Mode straight from the table, like the Admin switch. */
+    /* Demo Profit Mode straight from the table, like the Admin switch. */
     $$('[data-profit]').forEach(function (btn) {
       btn.addEventListener('click', function (e) {
         e.preventDefault();

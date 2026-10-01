@@ -18,75 +18,12 @@
   {"@context":"https://schema.org","@type":"WebSite","name":"Bitbase","url":"https://bitbase.exchange","image":"favicon.svg","publisher":{"@type":"Organization","name":"Bitbase","logo":{"@type":"ImageObject","url":"favicon.svg"}}}
   </script>
   <meta name="description" content="Bitbase is the world's leading cryptocurrency exchange. Trade 350+ crypto assets with advanced tools, low fees, and institutional-grade security.">
-  <link rel="preconnect" href="https://cdn.tailwindcss.com" crossorigin>
-  <link rel="preconnect" href="https://unpkg.com" crossorigin>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/lucide@latest"></script>
+  <link rel="stylesheet" href="assets/css/utilities.css">
+  <script defer src="assets/vendor/lucide.min.js"></script>
+  <script defer src="assets/js/icons.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          colors: {
-            'bg-primary': '#0f0f0f',
-            'bg-secondary': '#1a1a1a',
-            'bg-tertiary': '#242424',
-            'bg-glass': 'rgba(26,26,26,0.85)',
-            'accent-orange': '#f7931a',
-            'accent-yellow': '#fdb022',
-            'accent-blue': '#4169e1',
-            'accent-green': '#16c784',
-            'accent-red': '#ea3943',
-            'accent-purple': '#8b5cf6',
-            'text-primary': '#ffffff',
-            'text-secondary': '#b0b0b0',
-            'text-tertiary': 'grey',
-          },
-          fontFamily: {
-            heading: ['"Space Grotesk"', 'sans-serif'],
-            body: ['"Inter"', 'sans-serif'],
-            mono: ['"IBM Plex Mono"', 'monospace'],
-          },
-          keyframes: {
-            'ticker-slow': {
-              '0%': { transform: 'translateX(0)' },
-              '100%': { transform: 'translateX(-50%)' },
-            },
-            'float': {
-              '0%, 100%': { transform: 'translateY(0)' },
-              '50%': { transform: 'translateY(-20px)' },
-            },
-            'gradient-shift': {
-              '0%, 100%': { backgroundPosition: '0% 50%' },
-              '50%': { backgroundPosition: '100% 50%' },
-            },
-            'pulse-dot': {
-              '0%, 100%': { opacity: '1', transform: 'scale(1)' },
-              '50%': { opacity: '0.35', transform: 'scale(0.8)' },
-            },
-            'flash-up': {
-              '0%': { backgroundColor: 'rgba(22,199,132,0.28)' },
-              '100%': { backgroundColor: 'transparent' },
-            },
-            'flash-down': {
-              '0%': { backgroundColor: 'rgba(234,57,67,0.28)' },
-              '100%': { backgroundColor: 'transparent' },
-            },
-          },
-          animation: {
-            'ticker-slow': 'ticker-slow 140s linear infinite',
-            'float': 'float 6s ease-in-out infinite',
-            'gradient-shift': 'gradient-shift 4s ease-in-out infinite',
-            'pulse-dot': 'pulse-dot 1.6s ease-in-out infinite',
-            'flash-up': 'flash-up 0.7s ease-out',
-            'flash-down': 'flash-down 0.7s ease-out',
-          },
-        },
-      },
-    }
-  </script>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
   <link rel="stylesheet" href="assets/css/main.css">
 </head>
 <body class="min-h-screen w-full max-w-full min-w-0 overflow-x-hidden antialiased font-body bg-bg-primary text-text-primary">

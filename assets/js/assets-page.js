@@ -68,7 +68,7 @@
     pos.forEach(function (p) {
       if (!p || p.status !== 'Active') return;
       if (!p.pair) return;
-      var sym = String(p.pair).replace('/USDT', '');
+      var sym = 'USDT'; // The reserved stake is cash, not units of the underlying coin.
       out[sym] = (out[sym] || 0) + num(p.amt);
     });
     return out;
@@ -110,11 +110,11 @@
   function visibleRows() {
     var list = Object.keys(COIN_META).filter(function (sym) {
       if (S.tab === 'funding') return sym === 'USDT' && funding() > 0;
-      if (S.hideZero && coinQty(sym) <= 0 && (sym !== 'USDT' || spotCash() <= 0)) return false;
+      if (S.hideZero && coinQty(sym) <= 0 && !(sym === 'USDT' && (frozenByCoin().USDT || 0)>0)) return false;
       return true;
     });
     if (S.tab === 'funding') return ['USDT'];
-    if (S.tab === 'spot') return list.filter(function (s) { return s !== 'USDT' || spotCash() > 0; });
+    if (S.tab === 'spot') return list.filter(function (s) { return s !== 'USDT' || spotCash() > 0 || (frozenByCoin().USDT || 0)>0; });
     return list;
   }
 
@@ -123,7 +123,7 @@
     if (!body) return;
     var frozen = frozenByCoin();
     var rows = visibleRows();
-    var total = spotCash() + funding();
+    var total = spotCash() + funding() + (frozenByCoin().USDT || 0);
     COIN_META && Object.keys(COIN_META).forEach(function (sym) {
       if (sym === 'USDT') return;
       total += coinQty(sym) * priceOf(sym);
@@ -136,8 +136,8 @@
         var m = meta(sym);
         var qty = sym === 'USDT' && S.tab === 'funding' ? funding() : coinQty(sym);
         var price = priceOf(sym);
-        var val = qty * price;
-        var fr = frozen[sym] || 0;
+        var fr = S.tab==='funding' ? 0 : (frozen[sym] || 0);
+        var val = (qty+fr) * price;
         var chg = sym === 'USDT' ? 0 : num(S.chg[sym]);
         var isPos = chg >= 0;
         return '<tr data-sym="' + sym + '">' +
@@ -146,8 +146,8 @@
             '<div><div style="font-weight:500;">' + m.name + '</div>' +
             '<div style="font-size:12px;color:var(--text-tertiary);">' + sym + '</div></div>' +
           '</div></td>' +
-          '<td class="text-right font-mono js-qty" data-sym="' + sym + '">' + fmtQty(qty) + '</td>' +
-          '<td class="text-right font-mono" style="color:var(--text-secondary);">' + fmtQty(Math.max(0, qty - fr)) + '</td>' +
+          '<td class="text-right font-mono js-qty" data-sym="' + sym + '">' + fmtQty(qty+fr) + '</td>' +
+          '<td class="text-right font-mono" style="color:var(--text-secondary);">' + fmtQty(qty) + '</td>' +
           '<td class="text-right font-mono" style="color:' + (fr ? '#f59e0b' : 'var(--text-tertiary)') + ';">' + (fr ? fmtQty(fr) : '\u2014') + '</td>' +
           '<td class="text-right font-mono js-val" data-sym="' + sym + '">' + (price ? F.fmtCompact(val) : '\u2014') + '</td>' +
           '<td class="text-right"><span class="' + (isPos ? 'badge-green' : 'badge-red') + ' js-chg" data-sym="' + sym + '">' +
@@ -187,7 +187,7 @@
     var legend = $('#distLegend');
     if (!bar || !legend) return;
     var items = [];
-    var total = spotCash() + funding();
+    var total = spotCash() + funding() + (frozenByCoin().USDT || 0);
     items.push({ sym: 'USDT', pct: total > 0 ? (spotCash() / total) * 100 : 0, color: '#26a17b' });
     Object.keys(COIN_META).forEach(function (sym) {
       if (sym === 'USDT') return;
@@ -218,7 +218,7 @@
   function patchPrices() {
     Object.keys(COIN_META).forEach(function (sym) {
       var v = $('#assetsTableBody .js-val[data-sym="' + sym + '"]');
-      if (v && priceOf(sym)) v.textContent = F.fmtCompact(coinQty(sym) * priceOf(sym));
+      if (v && priceOf(sym)) v.textContent = F.fmtCompact(((sym==='USDT' && S.tab==='funding' ? funding() : coinQty(sym))+(sym==='USDT' && S.tab!=='funding' ? (frozenByCoin().USDT || 0) : 0))*priceOf(sym));
       var g = $('#assetsTableBody .js-chg[data-sym="' + sym + '"]');
       if (g && sym !== 'USDT') {
         var chg = num(S.chg[sym]);

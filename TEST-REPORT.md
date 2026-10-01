@@ -1,75 +1,38 @@
-# Test report — 2026-10-01
+# Repair validation — 2 October 2026
 
-## Result
+## Passed locally
 
-**23 automated local tests passed; 0 failed.** In addition, all 33 application
-JavaScript files/inline script blocks passed Node syntax checks. Local HTML
-asset references were checked, and the two standalone SQL entry points were
-confirmed identical. The exact automated run is in `TEST-RESULTS.txt`.
+- **51 / 51 JavaScript tests** (`npm test`): authentication and profile restoration, registration, admin visibility, support request/chat delivery, attachment separation, save retries, page boot gates, pagination, scoped reads and trade frontend behavior.
+- All application JavaScript files and nine inline scripts pass Node syntax checking.
+- Every local script/stylesheet/favicon reference in the HTML resolves to an included file.
+- Remote trade checks cover no browser-side credit, no real forced-win override, unchanged balance on rejection, same UUID after an uncertain response, different-payload retry rejection, server balance acknowledgement without profile writes, one result event, and rejection of a stale profile update after a settlement credit.
+- Offline arithmetic checks cover symmetric win/loss payouts, stake reservation/return, invalid prices, future expiry, repeated/overlapping sweeps and reopening a practice/offline page. **These are not tests of PostgreSQL concurrency or live market settlement.**
+- Demo positions and history persist in separate per-user settings.
 
-The tests run the actual `db.js`, `auth.js`, login/signup form scripts and
-protected-page startup scripts. Supabase is replaced with an explicit test
-double that models v2 response shapes, database state, multiple client sessions,
-permissions, events and connection failures. No production users or messages
-were created. Form/startup tests use DOM stubs; they are not rendered-browser
-visual tests.
+Initial database reads in the scoped fixture, before market-data calls:
 
-| Area | Verified locally |
-|---|---|
-| Session restoration | Reads `data.session`; handles `(event, session)` auth callbacks and token refresh |
-| Signup and login | Waits for boot; creates/loads server profiles; preserves balances/KYC on login |
-| Confirmation | Shows successful pending signup without claiming the user is signed in |
-| Invalid/offline login | Displays failure, releases the form spinner, and creates no local ghost account |
-| Orphaned accounts | Calls the caller-scoped repair RPC; surfaces profile policy errors |
-| New admin users list | Newly registered ordinary user appears in a separate admin session |
-| Requests | Deposit, withdrawal, borrow and KYC requests reach the admin mirror; status updates return to the customer |
-| Persistence | Flush waits for actual writes; failed requests stay queued and can be retried |
-| Concurrent customers | New rows from another customer are retained rather than deleted by stale collection writes |
-| Customer support | User message reaches admin; admin reply and subsequent customer image/message sync back |
-| Message ownership | Admin replies retain the customer's thread owner; unrelated customer sees no conversation in the modeled policy |
-| Retry after commit | A lost acknowledgement does not duplicate a message on retry |
-| Admin edits | Account-map edits persist to the intended server profile |
-| Logout | Clears prior account data and restores only the next account's permitted rows |
-| Pagination | Admin can load 1,003 profiles across multiple result pages |
-| Poll fallback | Data recovers without realtime event delivery through the four-second refresh path |
-| Disabled accounts | Cannot complete the login flow |
-| Protected pages | Dashboard, Assets, Markets, History, Settings and Trade wait for session readiness |
-| Auth form scripts | Invalid-login feedback, valid-login redirect and signup-confirmation feedback |
+| Page | Previous startup | Repaired startup |
+| --- | ---: | ---: |
+| Dashboard | 7 | 2 |
+| Assets, including support | 7 | 6 |
+| Markets | 7 | 1 |
+| Trade | 7 | 2 |
+| History | 7 | 3 |
+| Demo | 7 | 2 |
+| Settings | 7 | 3 |
 
-## Bugs corrected
+These are request counts, not measured production load-time improvements. Request sizes are also reduced by user/kind filters. The SQL migration removes old inline request attachments. Page styling no longer needs the Tailwind CDN/compiler; icons are local. The Supabase SDK still uses a CDN with a second-host fallback.
 
-- `getSession()` was treated as `{session}` instead of `{data:{session}}`.
-- The auth-change event name was mistaken for the session object.
-- Supabase SDK boot raced form submissions and protected-page redirects.
-- Database mirror objects/arrays were incorrectly passed through `JSON.parse`,
-  causing valid users, requests and chat records to appear empty.
-- Normal customers were excluded from support writes by a browser-side admin flag.
-- There were no Postgres change subscriptions; existing timers only reread the
-  same unchanged browser mirror.
-- The old flush function cancelled pending writes without sending them.
-- Several queries checked for errors before the query resolved, hiding failures.
-- Whole-collection writes could delete unseen requests or conversations.
-- An admin reply could overwrite a thread's customer ownership.
-- Message inserts did not retain stable IDs, enabling duplicates after resaves.
-- Profile-map edits were not consistently routed to the database.
-- The Markets script referenced an undefined auth variable during startup.
-- Old SQL repairs referenced a nonexistent timestamp column, suppressed trusted
-  profile updates, or risked making multiple orphaned accounts owners.
+## Still requires deployment verification
 
-## Live work still required
+- The new SQL migration, PostgreSQL locking/RLS/grants and scheduled HTTP requests were **not executed against live Supabase**. No database management credentials were available, and this workspace has no PostgreSQL engine. `supabase/test-settlement.sql` supplies rollback-based staging assertions; `supabase/check-settlement.sql` supplies operational diagnostics.
+- Real expiry prices, closed-browser credits and provider availability require **LIVE-CHECK.md**. The new worker runs in Supabase only after INSTALL.sql is applied. A file-only deployment does not enable it.
+- Browser visual/navigation smoke testing could not run: local Playwright has no browser binary, and the cloud browser blocked the local preview URL. An optional `tests/browser-smoke.cjs` harness is included for a local server with Playwright/Chromium installed. It uses fixtures, not real accounts.
+- Existing open positions need accounting review; the old format cannot prove whether their separately-written stake and payout were committed.
+- This is a targeted loading/settlement repair, not a complete redesign or security audit of the legacy wallet, deposits, withdrawals and administrator controls.
 
-The configured Supabase health request timed out from this environment. The
-archive contains a public client key, not database migration access. Therefore:
+## Architecture checked in the migration
 
-- The SQL repair was reviewed but not executed against PostgreSQL/Supabase here.
-- Actual production RLS, project settings, realtime publication, email delivery,
-  cross-device latency and deployed-page rendering remain unverified.
-- The website files have not been deployed.
+Placement, reservation and ledger insertion share a transaction. The server fixes start/expiry, allowed pairs and duration rates. The worker validates exact one-second candle timestamps, then changes status, credits cash, records one payout and updates history in the same transaction. Profile locks precede contract locks. A unique payout index is a second defense against duplicate credits. Browser roles cannot write canonical contracts/ledger or execute quote/payout helpers. Network failures retry original historical timestamps. Missing entry pricing cancels with a full refund; missing exit pricing waits for a valid quote.
 
-Run `README-FIRST.md` and then `LIVE-CHECK.md`. Existing account/profile IDs and
-roles are preserved. Any new admin role must be explicitly granted to the
-intended account by the project owner.
-
-This repair covers authentication, request visibility and support messaging.
-It is not a full audit of the existing client-driven financial operations,
-trade settlement, payment processing or production financial security.
+Private helpers never use the legacy profit-mode flag. Both real and demo interfaces now identify that flag as practice-only.

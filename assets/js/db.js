@@ -11,6 +11,20 @@
   var lastError = null, profileError = null, generation = 0, mutation = 0;
   var external = new Set(), channel = null, channelUid = '', live = false;
   var refreshJob = null, refreshTimer = null, authTimer = null;
+  var sessionJob = null, profileVersions = {}, lastRefresh = 0;
+  var page = String((global.location || {}).pathname || '').split('/').pop().replace('.html','');
+  // Only the console needs everybody's profiles and every collection.
+  var SCOPES = {
+    dashboard: ['trade','position','deposit','withdrawal'],
+    assets: ['trade','position','deposit','withdrawal','borrow','transfer','convert','notification'],
+    markets: [], index: [], login: [], register: [], trade: ['position','trade'], demo: [], settings: ['kyc'],
+    history: ['trade','deposit','withdrawal','borrow','transfer','convert','adjustment']
+  };
+  var kinds = SCOPES[page];
+  var fullRead = kinds === undefined;
+  var needsChat = fullRead || page === 'assets';
+  var needsSettings = fullRead || ['assets','settings','demo','history'].indexOf(page) !== -1;
+  var needsAppSettings = fullRead || page === 'assets';
   /* A request that carries an uploaded picture is answered by a fresh read, and
      a cold connection on a phone is not fast. The old 15s ceiling aborted
      perfectly healthy reads and turned them into an error banner. */
@@ -35,6 +49,8 @@
     bb_notification_prefs: { table: 'user_settings', key: 'notification_prefs' },
     bb_assets_hide_zero: { table: 'user_settings', key: 'assets_hide_zero' },
     bb_demo_trades_bal: { table: 'user_settings', key: 'demo_trades_bal' },
+    bb_demo_trades_pos: { table: 'user_settings', key: 'demo_trades_pos' },
+    bb_demo_trades_hist: { table: 'user_settings', key: 'demo_trades_hist' },
     bb_demo_trade_id_counter: { table: 'user_settings', key: 'demo_trade_id_counter' },
     bb_trade_id_counter: { table: 'user_settings', key: 'trade_id_counter' },
     bb_deposit_addresses: { table: 'app_settings', key: 'deposit_addresses', admin: true },
@@ -110,6 +126,7 @@
   function mirrorProfile(p) {
     profile = p;
     if (!p) return;
+    profileVersions[p.id] = p.updated;
     mirror.bb_uid=p.id; mirror.bb_name=p.name; mirror.bb_email=p.email;
     mirror.bb_registered_at=new Date(p.created).getTime(); mirror.bb_login_time=new Date(p.login_at || 0).getTime();
     mirror.bb_cash_balance=Number(p.cash || 0); mirror.bb_funding_balance=Number(p.funding || 0);
@@ -171,7 +188,7 @@
   function docKey(sid) { return DOC_PREFIX + sid; }
   function hasBytes(v) {
     if (typeof v === 'string') return /^data:/.test(v);
-    return !!(v && typeof v === 'object' && typeof v.data === 'string' && /^data:/.test(v.data));
+    return !!(v && typeof v === 'object' && Object.keys(v).some(function(k){return hasBytes(v[k]);}));
   }
   /* What stays on the request: enough to label the attachment in a table. */
   function docStub(v, ref) {
@@ -193,30 +210,36 @@
     snapshots[key] = {};
     rows.forEach(function (r) { snapshots[key][r._sid] = clone(r); });
   }
-  async function hydrate() {
+  async function hydrate(reuseProfile) {
     if (!isOn() || busy()) return false;
     var g = generation, m = mutation, id = uid();
     // Paginated reads avoid the server's default 1,000-row cap. RLS scopes them.
     var r = await Promise.all([
-      allRows(function () { return client.from('profiles').select('*').order('id'); }),
-      allRows(function () { return client.from('request_rows').select('*').order('id'); }),
-      allRows(function () { return client.from('support_threads').select('*').order('id'); }),
-      allRows(function () { return client.from('support_messages').select('*').order('created').order('id'); }),
+      reuseProfile && !fullRead && profile ? Promise.resolve([profile]) : allRows(function () { var q=client.from('profiles').select('*'); return (fullRead ? q : q.eq('id',id)).order('id'); }),
+      !fullRead && !kinds.length ? Promise.resolve([]) : allRows(function () {
+        var q=client.from('request_rows').select('*');
+        return (fullRead ? q : q.eq('user_id',id).in('kind',kinds)).order('id');
+      }),
+      needsChat ? allRows(function () { var q=client.from('support_threads').select('*'); return (fullRead ? q : q.eq('user_id',id)).order('id'); }) : Promise.resolve([]),
+      needsChat ? allRows(function () { var q=client.from('support_messages').select(fullRead ? '*' : '*,support_threads!inner(user_id)');return (fullRead ? q : q.eq('support_threads.user_id',id)).order('created').order('id'); }) : Promise.resolve([]),
       // Attachment rows are excluded here on purpose: they are the heavy ones,
       // and nothing in the settings screen needs them.
-      allRows(function () { return client.from('user_settings').select('*').eq('user_id', id)
-        .not('key', 'like', DOC_PREFIX + '%').order('key'); }),
-      allRows(function () { return client.from('app_settings').select('*').order('key'); })
+      needsSettings ? allRows(function () { return client.from('user_settings').select('*').eq('user_id', id)
+        .not('key', 'like', DOC_PREFIX + '%').order('key'); }) : Promise.resolve([]),
+      needsAppSettings ? allRows(function () { return client.from('app_settings').select('*').order('key'); }) : Promise.resolve([])
     ]);
     if (g !== generation || m !== mutation || busy()) { scheduleRefresh(); return false; }
     var own = r[0].find(function (p) { return p.id === id; });
     if (!own) throw new Error('Your account profile is not readable. Apply the database repair script.');
     var before = JSON.stringify(mirror);
     var accounts = {};
-    r[0].forEach(function (p) { accounts[p.id]=toAccount(p); });
+    r[0].forEach(function (p) { accounts[p.id]=toAccount(p); profileVersions[p.id]=p.updated; });
     mirror.bb_accounts=accounts; mirror['bb_accounts:snapshot']=clone(accounts); mirrorProfile(own);
     Object.keys(MAP).forEach(function (key) {
       var spec=MAP[key];
+      if (spec.kind && !fullRead && kinds.indexOf(spec.kind) === -1) return;
+      if (spec.table==='user_settings' && !needsSettings) return;
+      if (spec.table==='app_settings' && !needsAppSettings) return;
       if (spec.kind) {
         mirror[key]=r[1].filter(function (row) { return row.kind===spec.kind; })
           .sort(function (a,b) { return new Date(b.created)-new Date(a.created); }).map(requestData);
@@ -227,9 +250,10 @@
       }
     });
     r[1].concat(r[2]).forEach(function (row) { versions[row.id]=row.updated; });
-    mirror.bb_support_threads=r[2].sort(function (a,b) { return new Date(b.updated)-new Date(a.updated); })
+    if (needsChat) mirror.bb_support_threads=r[2].sort(function (a,b) { return new Date(b.updated)-new Date(a.updated); })
       .map(function (t) { return threadData(t,r[3]); });
-    snapshot('bb_support_threads', mirror.bb_support_threads);
+    if (needsChat) snapshot('bb_support_threads', mirror.bb_support_threads);
+    lastRefresh=Date.now();
     status='ready'; lastError=null;
     var banner=document.getElementById('bbDbWarn'); if (banner) banner.remove();
     if (before !== JSON.stringify(mirror)) emit('bitbase:data');
@@ -239,10 +263,10 @@
     if (refreshTimer || !isOn()) return;
     refreshTimer=setTimeout(function () { refreshTimer=null; refresh().catch(function () {}); }, 60);
   }
-  async function refresh() {
+  async function refresh(reuseProfile) {
     if (!isOn() || busy()) return false;
-    if (refreshJob) { scheduleRefresh(); return refreshJob; }
-    refreshJob=hydrate().catch(function (e) { report(e); throw e; }).finally(function () { refreshJob=null; });
+    if (refreshJob) return refreshJob;
+    refreshJob=hydrate(reuseProfile===true).catch(function (e) { report(e); throw e; }).finally(function () { refreshJob=null; });
     return refreshJob;
   }
   function startLive() {
@@ -250,15 +274,27 @@
     stopLive(); channelUid=uid();
     channel=client.channel('bitbase-'+uid());
     ['profiles','request_rows','support_threads','support_messages','user_settings','app_settings'].forEach(function (table) {
-      channel.on('postgres_changes', { event:'*', schema:'public', table:table }, scheduleRefresh);
+      if (!needsChat && /^support_/.test(table)) return;
+      if (!fullRead && !kinds.length && table==='request_rows') return;
+      if (!needsSettings && table==='user_settings') return;
+      if (!needsAppSettings && table==='app_settings') return;
+      var filter={ event:'*', schema:'public', table:table };
+      if (!fullRead && table==='profiles') filter.filter='id=eq.'+uid();
+      if (!fullRead && ['request_rows','support_threads','user_settings'].indexOf(table)!==-1) filter.filter='user_id=eq.'+uid();
+      channel.on('postgres_changes', filter, scheduleRefresh);
     });
     channel.subscribe(function (state) {
       live=state==='SUBSCRIBED';
       emit('bitbase:connection', { realtime:live, state:state });
-      if (live) scheduleRefresh();
+      if (live && Date.now()-lastRefresh > 3000) scheduleRefresh();
     });
   }
-  async function refreshSession() {
+  function refreshSession() {
+    if (sessionJob) return sessionJob;
+    sessionJob=restoreSession().finally(function () { sessionJob=null; });
+    return sessionJob;
+  }
+  async function restoreSession() {
     if (!client) throw new Error(lastError || 'The sign-in service is unavailable. Reload and try again.');
     var r=await checked(client.auth.getSession());
     acceptSession(r.data && r.data.session);
@@ -268,7 +304,7 @@
       await client.auth.signOut(); acceptSession(null);
       throw new Error('This account has been deactivated. Please contact support.');
     }
-    await refresh(); startLive();
+    await refresh(true); startLive();
     return profile;
   }
   function prepare(key) {
@@ -422,8 +458,7 @@
       }
     } else if (spec.profile) {
       var patch={}; patch[spec.profile]=value;
-      var result=await checked(client.from('profiles').update(patch).eq('id',owner).select('id').maybeSingle());
-      if (!result.data) throw new Error('The profile update was refused.');
+      await saveProfileFor(owner,patch);
     } else if (spec.table==='request_rows') await writeRows(key,spec,value,owner,g);
     else if (spec.table==='support_threads') await writeThreads(key,value,owner,g);
     else {
@@ -470,13 +505,21 @@
     scheduleRefresh(); emit('bitbase:saved');
     return true;
   }
+  var profileWrites = Promise.resolve();
   function saveProfileFor(id, patch) {
     if (!isOn() || !id) return Promise.reject(new Error('Please sign in before saving.'));
     var g=generation; mutation++;
-    var p=checked(client.from('profiles').update(patch).eq('id',id).select('*').maybeSingle())
+    var p=profileWrites.catch(function () {}).then(function () {
+      if (g!==generation) throw new Error('Session changed before saving.');
+      var q=client.from('profiles').update(patch).eq('id',id);
+      // A page with an old balance must never overwrite a background credit.
+      if (profileVersions[id]) q=q.eq('updated',profileVersions[id]);
+      return checked(q.select('*').maybeSingle());
+    })
       .then(function (r) {
-        if (!r.data) throw new Error('The profile update was refused.');
+        if (!r.data) throw new Error('Your balance or profile changed in another session. Reload before retrying this change.');
         if (g===generation) {
+          profileVersions[id]=r.data.updated;
           var map=mirror.bb_accounts || {}, snap=mirror['bb_accounts:snapshot'] || {};
           // Update only the acknowledged fields; a second pending edit may exist.
           var server=toAccount(r.data); snap[id]=clone(server); mirror['bb_accounts:snapshot']=snap;
@@ -484,7 +527,35 @@
         }
         return r;
       }).catch(function (e) { report(e); throw e; }).finally(function () { external.delete(p); scheduleRefresh(); });
-    external.add(p); return p;
+    profileWrites=p; external.add(p); return p;
+  }
+  async function tradeRpc(name, args) {
+    await ready;
+    if (!isOn()) throw new Error('Please sign in before trading.');
+    await flush();
+    var g=generation;
+    var job=checked(client.rpc(name,args));
+    external.add(job);
+    try {
+      var r=await job, d=r.data;
+      if (!d || !d.contractId) throw new Error('The trade acknowledgement was incomplete. Retry the same order.');
+      if (g===generation) {
+        mutation++;
+        ['bb_trade_positions','bb_trades_history'].forEach(function (key) {
+          var rows=(mirror[key] || []).filter(function (x) { return x.contractId!==d.contractId; });
+          if (key==='bb_trades_history' || d.status==='Active' || d.status==='Review') rows.unshift(d);
+          mirror[key]=rows;
+        });
+        if (d.balance!==undefined && profile) {
+          var p=clone(profile); p.cash=Number(d.balance);p.updated=d.balanceVersion || p.updated;
+          p.assets=Object.assign({},p.assets,{USDT:{balance:p.cash,qty:p.cash}});
+          mirrorProfile(p);
+          var snap=mirror['bb_accounts:snapshot'] || {};snap[p.id]=toAccount(p);mirror['bb_accounts:snapshot']=snap;
+        }
+        emit('bitbase:data');
+      }
+      return d;
+    } finally { external.delete(job); scheduleRefresh(); }
   }
   async function loadAccounts() { await refresh(); return mirror.bb_accounts || {}; }
   async function deleteAccountFor(id) {
@@ -510,12 +581,17 @@
   async function loadSdk() {
     if (global.supabase && global.supabase.createClient) return;
     await new Promise(function (resolve,reject) {
-      var script=document.createElement('script');
-      var timer=setTimeout(function () { reject(new Error('Sign-in service took too long to load. Check your connection and reload.')); },15000);
-      script.src='https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js';
-      script.onload=function () { clearTimeout(timer); global.supabase ? resolve() : reject(new Error('Supabase SDK is unavailable.')); };
-      script.onerror=function () { clearTimeout(timer); reject(new Error('Could not load the sign-in service. Reload and try again.')); };
-      document.head.appendChild(script);
+      var done=false,backup=false,errors=0;
+      var timer=setTimeout(function () { done=true;reject(new Error('Sign-in service took too long to load. Check your connection and reload.')); },15000);
+      function add(src) {
+        var script=document.createElement('script');script.async=true;script.src=src;
+        script.onload=function () { if(!done && global.supabase){done=true;clearTimeout(timer);clearTimeout(fallback);resolve();} };
+        script.onerror=function () { if(++errors>=2&&!done){done=true;clearTimeout(timer);reject(new Error('Could not load the sign-in service. Reload and try again.'));}else second(); };
+        document.head.appendChild(script);
+      }
+      function second(){if(done||backup)return;backup=true;add('https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.min.js');}
+      var fallback=setTimeout(second,2500);
+      add('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js');
     });
   }
   var ready=(async function () {
@@ -561,12 +637,12 @@
      pure overhead - six queries a minute, forever, competing with the page for
      whatever connection the user has. */
   var FALLBACK_POLL_MS = 15000;
-  setInterval(function () { if (!document.hidden && isOn()) scheduleRefresh(); }, FALLBACK_POLL_MS);
+  setInterval(function () { if (!document.hidden && isOn() && Date.now()-lastRefresh > (live ? 60000 : FALLBACK_POLL_MS-100)) scheduleRefresh(); }, FALLBACK_POLL_MS);
   global.BitbaseDB={ MAP:MAP, mirror:mirror, ready:ready, configured:function () { return configured; },
     status:function () { return status; }, error:function () { return lastError; }, isOn:isOn, uid:uid,
     profile:function () { return profile; }, profileError:function () { return profileError; },
     client:function () { return client; }, toAccount:toAccount, hydrate:refresh, refresh:refresh,
-    refreshSession:refreshSession, ensureProfile:ensureProfile, loadAccounts:loadAccounts,
+    refreshSession:refreshSession, ensureProfile:ensureProfile, loadAccounts:loadAccounts, tradeRpc:tradeRpc,
     persist:queue, flush:flush, hasPending:busy, realtime:function () { return live; },
     saveProfileFor:saveProfileFor, saveProfile:function (patch) { return saveProfileFor(uid(),patch); },
     deleteAccountFor:deleteAccountFor, audit:audit, warn:report,
