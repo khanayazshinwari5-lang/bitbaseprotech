@@ -202,8 +202,7 @@
     var withdrawals = list('bb_withdrawal_requests');
     var loans = list('bb_borrow_requests');
     var kyc = list('bb_kyc_requests');
-    var threads = list('bb_support_threads');
-
+    var threads = supportThreads();
     var balance = acc.reduce(function (s, a) { return s + a.total; }, 0);
     var openPos = trades.filter(function (t) { return t.status === 'Active'; });
     var openTickets = threads.filter(function (t) { return t.status === 'open'; });
@@ -396,68 +395,125 @@
   var supportFilter = 'all';
   var supportOpen = null;
 
+  function initials(name) {
+    var parts = String(name || 'User').trim().split(/\s+/).slice(0, 2);
+    return parts.map(function (p) { return p.charAt(0).toUpperCase(); }).join('') || 'U';
+  }
+  /* A conversation only exists once somebody actually typed. Threads with no
+     messages are rows left behind by an earlier build and are not shown. */
+  function supportThreads() {
+    return list('bb_support_threads').filter(function (t) {
+      return Array.isArray(t.messages) && t.messages.length > 0;
+    }).sort(function (a, b) { return num(b.updated) - num(a.updated); });
+  }
+  /* True when the newest line in the thread came from the user, so the
+     conversation is still waiting on an agent. */
+  function waitingOnAdmin(t) {
+    var msgs = t.messages || [];
+    if (!msgs.length) return false;
+    return msgs[msgs.length - 1].from !== 'admin';
+  }
+
   function viewSupport() {
-    var threads = list('bb_support_threads').slice().sort(function (a, b) {
-      return num(b.updated) - num(a.updated);
-    });
+    var threads = supportThreads();
     var out = threads.filter(function (t) {
       if (supportFilter === 'all') return true;
       return t.status === supportFilter;
     });
     if (!threads.length) {
       return '<div class="am-panel"><div class="am-empty">' +
-        'No support conversations yet. A conversation is created when a user sends ' +
-        'a message in the Assets help panel.</div></div>';
+        'No support conversations yet. A conversation appears here the moment a user ' +
+        'sends a message from the help panel in Assets.</div></div>';
     }
-    if (!supportOpen || !threads.some(function (t) { return t.id === supportOpen; })) {
-      supportOpen = out.length ? out[0].id : threads[0].id;
+    // Nothing is opened on arrival: the list is the inbox, and the messages are
+    // only rendered once an agent picks one. Switching filter closes whatever
+    // was open, so the thread pane never disagrees with the list beside it.
+    if (supportOpen && !out.some(function (t) { return t.id === supportOpen; })) {
+      supportOpen = null;
     }
-    var thread = threads.filter(function (t) { return t.id === supportOpen; })[0];
+    var thread = supportOpen
+      ? threads.filter(function (t) { return t.id === supportOpen; })[0] : null;
 
+    var waiting = out.filter(waitingOnAdmin).length;
     var items = out.map(function (t) {
-      var last = (t.messages || [])[t.messages.length - 1];
-      var preview = last ? last.body : 'No messages';
-      return '<div class="am-conv-item' + (t.id === supportOpen ? ' on' : '') + '" data-thread="' + esc(t.id) + '">' +
-        '<div class="t"><span>' + esc(t.name || 'User') + ' (' + esc(shortId(t.uid)) + ')</span>' +
-        '<span>' + whenShort(t.updated) + '</span></div>' +
-        '<div class="p"><span class="am-dot"></span>' + esc(preview.slice(0, 46)) + '</div>' +
+      var msgs = t.messages || [];
+      var last = msgs[msgs.length - 1];
+      var on = t.id === supportOpen;
+      var fromUser = last && last.from !== 'admin';
+      var status = t.status === 'resolved'
+        ? '<span class="am-conv-tag done">Resolved</span>'
+        : '<span class="am-conv-tag">Open</span>';
+      return '<div class="am-conv-item' + (on ? ' on' : '') + '" role="button" tabindex="0" ' +
+          'data-thread="' + esc(t.id) + '">' +
+        '<span class="am-conv-av">' + esc(initials(t.name)) + '</span>' +
+        '<span class="am-conv-body">' +
+          '<span class="am-conv-top">' +
+            '<span class="am-conv-name">' + esc(t.name || 'User') + '</span>' +
+            '<span class="am-conv-time">' + whenShort(t.updated) + '</span>' +
+          '</span>' +
+          '<span class="am-conv-sub">UID ' + esc(shortId(t.uid)) + status +
+            (waitingOnAdmin(t) ? '<span class="am-conv-new">new</span>' : '') +
+          '</span>' +
+          '<span class="am-conv-prev">' +
+            (fromUser ? '<span class="am-dot"></span>' : '<span class="am-dot admin"></span>') +
+            '<span class="am-conv-snip">' + esc((last && last.body ? last.body : '').slice(0, 54)) + '</span>' +
+          '</span>' +
+        '</span></div>';
+    }).join('');
+
+    var head;
+    if (thread) {
+      var msgsHtml = (thread.messages || []).slice().sort(function (a, b) {
+        return num(a.time) - num(b.time);
+      }).map(function (m) {
+        var isAdmin = m.from === 'admin';
+        return '<div class="am-msg ' + (isAdmin ? 'a' : 'u') + '">' +
+          '<div class="who">' + esc(isAdmin ? 'Admin' : (m.name || 'User')) + '</div>' +
+          '<div class="bd">' + esc(m.body) + '</div>' +
+          '<div class="tm">' + when(m.time) + '</div></div>';
+      }).join('');
+
+      var actions = thread.status === 'open'
+        ? '<button class="am-btn primary" data-th="' + esc(thread.id) + '" data-sact="open"' + lock('replySupport') + '>Open</button>' +
+          '<button class="am-btn ok" data-th="' + esc(thread.id) + '" data-sact="resolve"' + lock('replySupport') + '>Resolve</button>'
+        : '<button class="am-btn primary" data-th="' + esc(thread.id) + '" data-sact="open"' + lock('replySupport') + '>Reopen</button>';
+      actions += '<button class="am-btn no" data-th="' + esc(thread.id) + '" data-sact="delete"' + lock('deleteRecords') + '>Delete</button>';
+
+      head =
+        '<div class="am-thread-head">' +
+          '<div style="min-width:0;">' +
+            '<button class="am-btn am-back" id="amConvBack">Back</button>' +
+            '<div style="font-weight:700;font-size:15px;margin-top:' + (thread.status === 'open' ? '0' : '2px') + ';">' +
+              esc(thread.name || 'User') + ' (' + esc(shortId(thread.uid)) + ')</div>' +
+            '<div style="font-size:12px;color:#7a7a7a;margin-top:3px;">' + esc(thread.email || '') +
+              ' &middot; started ' + when(thread.created) +
+              ' &middot; ' + (thread.messages || []).length + ' message' +
+              ((thread.messages || []).length === 1 ? '' : 's') + '</div>' +
+          '</div>' +
+          '<div style="display:flex;gap:8px;flex:0 0 auto;">' + actions + '</div>' +
+        '</div>' +
+        '<div class="am-msgs" id="amMsgs">' + msgsHtml + '</div>' +
+        '<div class="am-reply">' +
+          '<input class="am-input" id="amReply" placeholder="Type your reply..."' + (can('replySupport') ? '' : ' disabled') + '>' +
+          '<button class="am-btn primary" data-th="' + esc(thread.id) + '" data-sact="send" ' +
+            'style="padding:11px 20px;"' + lock('replySupport') + '>Send</button>' +
         '</div>';
-    }).join('');
-
-    var msgs = (thread.messages || []).map(function (m) {
-      var isAdmin = m.from === 'admin';
-      return '<div class="am-msg ' + (isAdmin ? 'a' : 'u') + '">' +
-        '<div class="who">' + esc(isAdmin ? 'Admin' : (m.name || 'User')) + '</div>' +
-        '<div class="bd">' + esc(m.body) + '</div>' +
-        '<div class="tm">' + when(m.time) + '</div></div>';
-    }).join('');
-
-    var actions = thread.status === 'open'
-      ? '<button class="am-btn primary" data-th="' + esc(thread.id) + '" data-sact="open"' + lock('replySupport') + '>Open</button>' +
-        '<button class="am-btn ok" data-th="' + esc(thread.id) + '" data-sact="resolve"' + lock('replySupport') + '>Resolve</button>'
-      : '<button class="am-btn primary" data-th="' + esc(thread.id) + '" data-sact="open"' + lock('replySupport') + '>Reopen</button>';
-    actions += '<button class="am-btn no" data-th="' + esc(thread.id) + '" data-sact="delete"' + lock('deleteRecords') + '>Delete</button>';
+    } else {
+      head = '<div class="am-thread am-thread-idle">' +
+        '<i data-lucide="message-circle" style="width:26px;height:26px;"></i>' +
+        '<div>Pick a conversation to read it</div>' +
+        '<span>The ' + out.length + ' conversation' + (out.length === 1 ? '' : 's') + ' on the left are ' +
+          'preview only until you open one' + (waiting ? ', ' + waiting + ' waiting on you' : '') + '.</span>' +
+      '</div>';
+    }
 
     return '<div class="am-filters left">' +
         filterRow([['all', 'All'], ['open', 'Open'], ['resolved', 'Resolved']], supportFilter, 'data-sfilter') +
+        (waiting ? '<span class="am-live"><span class="d"></span>' + waiting + ' waiting on you</span>' : '') +
       '</div>' +
-      '<div class="am-panel"><div class="am-conv">' +
+      '<div class="am-panel am-conv-panel' + (thread ? ' open' : '') + '"><div class="am-conv">' +
         '<div class="am-conv-list">' + items + '</div>' +
-        '<div class="am-thread">' +
-          '<div class="am-thread-head">' +
-            '<div><div style="font-weight:700;font-size:15px;">' + esc(thread.name || 'User') +
-              ' (' + esc(shortId(thread.uid)) + ')</div>' +
-              '<div style="font-size:12px;color:#7a7a7a;margin-top:3px;">' + esc(thread.email || '') +
-              ' &middot; ' + when(thread.created) + '</div></div>' +
-            '<div style="display:flex;gap:8px;flex:0 0 auto;">' + actions + '</div>' +
-          '</div>' +
-          '<div class="am-msgs" id="amMsgs">' + (msgs || '<div class="am-empty">No messages in this thread.</div>') + '</div>' +
-          '<div class="am-reply">' +
-            '<input class="am-input" id="amReply" placeholder="Type your reply..."' + (can('replySupport') ? '' : ' disabled') + '>' +
-            '<button class="am-btn primary" data-th="' + esc(thread.id) + '" data-sact="send" ' +
-              'style="padding:11px 20px;"' + lock('replySupport') + '>Send</button>' +
-          '</div>' +
-        '</div>' +
+        '<div class="am-thread">' + head + '</div>' +
       '</div></div>';
   }
 
@@ -1091,7 +1147,9 @@
   function counts() {
     var out = {};
     function count(key, pred) { return list(key).filter(pred).length; }
-    out.support = count('bb_support_threads', function (t) { return t.status === 'open'; });
+    out.support = count('bb_support_threads', function (t) {
+      return t.status === 'open' && Array.isArray(t.messages) && t.messages.length > 0;
+    });
     out.withdrawals = count('bb_withdrawal_requests', function (r) { return r.status === 'pending'; });
     out.kyc = count('bb_kyc_requests', function (r) { return (r.status || 'pending') === 'pending'; });
     out.loans = count('bb_borrow_requests', function (r) { return (r.status || 'pending') === 'pending'; });
@@ -1653,8 +1711,14 @@
     /* ---- support ---- */
     $$('[data-thread]').forEach(function (el) {
       if (el.tagName === 'BUTTON') return;
-      el.addEventListener('click', function () { supportOpen = el.dataset.thread; render(); });
+      var open = function () { supportOpen = el.dataset.thread; render(); };
+      el.addEventListener('click', open);
+      el.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+      });
     });
+    var back = $('#amConvBack');
+    if (back) back.addEventListener('click', function () { supportOpen = null; render(); });
     $$('[data-sact]').forEach(function (b) {
       b.addEventListener('click', function () {
         var id = b.dataset.th;

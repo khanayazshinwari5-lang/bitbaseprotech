@@ -253,20 +253,62 @@ body {
 .am-split.even { grid-template-columns: 1fr 1fr; }
 @media (max-width: 1080px) { .am-split, .am-split.even { grid-template-columns: 1fr; } }
 
-/* ------------------------------------------------------------- support */
-.am-conv { display: grid; grid-template-columns: 360px 1fr; gap: 0; min-height: 640px; }
-@media (max-width: 1080px) { .am-conv { grid-template-columns: 1fr; } }
+/* ------------------------------------------------------------- support
+   Inbox on the left, preview only: a conversation is opened deliberately and
+   its messages are rendered then, not before. */
+.am-conv { display: grid; grid-template-columns: 360px 1fr; gap: 0; min-height: 620px; }
+@media (max-width: 1080px) { .am-conv { grid-template-columns: 320px 1fr; } }
 .am-conv-list { border-right: 1px solid #1f1f1f; overflow-y: auto; max-height: 720px; }
 .am-conv-item {
+  display: flex; align-items: flex-start; gap: 12px;
   padding: 13px 16px; border-bottom: 1px solid #1c1c1c; cursor: pointer;
   border-left: 3px solid transparent; transition: background .15s;
 }
 .am-conv-item:hover { background: rgba(255,255,255,.02); }
 .am-conv-item.on { background: rgba(247,147,26,.08); border-left-color: var(--accent-orange); }
-.am-conv-item .t { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; font-weight: 600; }
-.am-conv-item .t span:last-child { color: #5a5a5a; font-size: 11px; font-weight: 500; font-family: 'IBM Plex Mono', monospace; white-space: nowrap; }
-.am-conv-item .p { font-size: 12px; color: #7a7a7a; margin-top: 5px; display: flex; align-items: center; gap: 6px; }
+.am-conv-av {
+  width: 34px; height: 34px; flex: 0 0 34px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255,255,255,.07); color: #cfcfcf;
+  font-size: 12px; font-weight: 700; letter-spacing: .02em;
+}
+.am-conv-item.on .am-conv-av { background: linear-gradient(135deg,#f7931a,#fdb022); color: #1a1206; }
+.am-conv-body { min-width: 0; flex: 1; }
+.am-conv-top { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.am-conv-name { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.am-conv-time { color: #5a5a5a; font-size: 11px; font-weight: 500; font-family: 'IBM Plex Mono', monospace; white-space: nowrap; }
+.am-conv-sub {
+  display: flex; align-items: center; gap: 7px; margin-top: 4px;
+  font-size: 11px; color: #6a6a6a; font-family: 'IBM Plex Mono', monospace;
+}
+.am-conv-tag {
+  font-family: 'Inter', sans-serif; font-size: 10px; font-weight: 600;
+  padding: 1px 6px; border-radius: 999px;
+  background: rgba(247,147,26,.14); color: #fdb022;
+}
+.am-conv-tag.done { background: rgba(22,199,132,.14); color: #2fd6a0; }
+.am-conv-new {
+  font-family: 'Inter', sans-serif; font-size: 10px; font-weight: 700;
+  padding: 1px 6px; border-radius: 999px; background: #6b8ef5; color: #0b1220;
+}
+.am-conv-prev {
+  display: flex; align-items: center; gap: 7px; margin-top: 6px;
+  font-size: 12px; color: #7a7a7a; line-height: 1.4;
+}
+.am-conv-snip { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .am-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-orange); flex: 0 0 6px; }
+.am-dot.admin { background: #3f6bd8; }
+
+/* Nothing open yet. */
+.am-thread-idle {
+  align-items: center; justify-content: center; text-align: center;
+  gap: 8px; padding: 40px 24px; color: #5a5a5a;
+}
+.am-thread-idle i { color: #333; }
+.am-thread-idle div { font-size: 14px; font-weight: 600; color: #8a8a8a; }
+.am-thread-idle span { font-size: 12.5px; line-height: 1.6; max-width: 380px; }
+.am-back { display: none; margin-bottom: 10px; }
+
 .am-thread { display: flex; flex-direction: column; min-width: 0; }
 .am-thread-head {
   padding: 16px 20px; border-bottom: 1px solid #1f1f1f;
@@ -421,4 +463,16 @@ body {
   .am-modal { padding: 12px; }
   .am-modal .box { max-height: 92vh; }
   #amToast { left: 12px; right: 12px; bottom: 12px; align-items: stretch; }
+
+  /* Support becomes one pane at a time: the inbox, then the thread you picked,
+     with a Back button to return. Both panes at once on a phone was unusable. */
+  .am-conv { grid-template-columns: 1fr; min-height: 0; }
+  .am-conv-list { border-right: none; max-height: none; }
+  .am-conv-panel:not(.open) .am-thread { display: none; }
+  .am-conv-panel.open .am-conv-list { display: none; }
+  .am-back { display: inline-flex; }
+  .am-msgs { max-height: none; }
+  .am-reply { padding: 12px 14px; flex-wrap: wrap; }
+  .am-reply .am-input { flex: 1 1 100%; }
+  .am-thread-head { flex-wrap: wrap; }
 }
