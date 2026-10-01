@@ -38,9 +38,11 @@
      and gave no way to find out why. They are listed and labelled instead, and
      the buy/sell buttons are disabled for them with the reason on screen.
 
-     SETTLED has to agree with the allowlist in supabase/INSTALL.sql. Adding a
-     symbol there and here is what makes a new pair tradable with real money. */
-  var SETTLED = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'DOGE', 'AVAX', 'LINK', 'TRX', 'DOT', 'LTC'];
+     SETTLED has to agree with bb_settles() in supabase/INSTALL.sql. Adding a
+     symbol there and here is what makes a new pair tradable with real money, and
+     tests/tradable-pairs.test.cjs fails if the two ever drift apart. */
+  var SETTLED = ['BTC', 'ETH', 'BNB', 'SOL', 'XRP', 'ADA', 'DOGE', 'AVAX', 'LINK', 'TRX', 'DOT', 'LTC',
+                 'XAU', 'XAUT'];
   var GROUP_ORDER = ['crypto', 'metals', 'forex', 'commodities'];
   var GROUP_LABEL = { crypto: 'Crypto', metals: 'Metals', forex: 'Forex', commodities: 'Commodities' };
   var VENUE_NAME = { binance: 'Binance USDT', kraken: 'Kraken', tv: 'TradingView futures', spot: 'the spot gold feed' };
@@ -707,11 +709,18 @@
       });
     }
 
+    /* ETH unless the link names a pair. Markets deep-links with ?pair=, so that
+       still wins, and an unknown or un-settleable symbol simply falls back to
+       the default rather than opening an order screen for a pair that cannot
+       take the order. */
+    var DEFAULT_PAIR = 'ETH';
     var wanted = new URLSearchParams(global.location.search).get('pair');
+    var startAt = PAIRS.map(function (p) { return p.sym; }).indexOf(DEFAULT_PAIR);
     if (wanted) {
       var i = PAIRS.map(function (p) { return p.sym; }).indexOf(wanted.toUpperCase());
-      if (i >= 0) S.idx = i;
+      if (i >= 0 && canSettle(PAIRS[i])) startAt = i;
     }
+    if (startAt >= 0) { S.idx = startAt; selectPair(startAt); }
 
     S.positions = loadPositions().filter(function (p) { return p.status === 'Active' || p.status==='Review'; });
     setBalance(balance());
