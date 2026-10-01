@@ -265,6 +265,20 @@
 
     if (remote()) {
       var c = BB.client();
+      /* Shared tail: the session exists, so rebuild the mirror from the new
+         user before anything reads it. */
+      var settle = function () {
+        return BB.refreshSession()
+          .then(function () { return BB.loadAccounts(); })
+          .then(function () {
+            var me = allUsers()[BB.uid()] || null;
+            if (!me) {
+              return Promise.reject({ field: 'submitError', message: 'Your account was created but could not be loaded. Try signing in.' });
+            }
+            startSession(me.uid, me, undefined, true);
+            return me;
+          });
+      };
       return c.auth.signUp({
         email: email,
         password: pass,
@@ -276,17 +290,15 @@
           }
           return Promise.reject({ field: 'submitError', message: res.error.message });
         }
-        if (!res.data || !res.data.session) {
-          // Only happens when "Confirm email" is on in Supabase settings.
-          return Promise.reject({ field: 'submitError', message: 'Check your inbox to confirm this email, then sign in.' });
-        }
-        return BB.refreshSession().then(function () {
-          return BB.loadAccounts();
-        }).then(function () {
-          var me = allUsers()[BB.uid()] || null;
-          if (!me) return Promise.reject({ field: 'submitError', message: 'Your account was created but could not be loaded. Try signing in.' });
-          startSession(me.uid, me, undefined, true);
-          return me;
+        if (res.data && res.data.session) return settle();
+        // No session means the project has "Confirm email" switched on. Try to
+        // sign in anyway - it succeeds the moment the address is confirmed, so
+        // this stays working without anybody visiting the dashboard.
+        return c.auth.signInWithPassword({ email: email, password: pass }).then(function (again) {
+          if (again.error || !again.data || !again.data.session) {
+            return Promise.reject({ field: 'submitError', message: 'Check your inbox to confirm this email address, then sign in.' });
+          }
+          return settle();
         });
       });
     }

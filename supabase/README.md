@@ -39,14 +39,46 @@ row level security entirely.
 
 **Authentication → Sign In / Providers → Email** → untick **Confirm email**.
 
-With it on, `signUp` returns a user with no session and the app cannot tell a
-pending signup from a failure. Leave the **Enable signup** toggle on unless you
-want registration closed.
+With it on, `signUp` returns a user with no session. The app then tries to sign
+in straight away and tells you to confirm the address if that fails — so it
+degrades instead of breaking — but turning it off is what you want for a demo.
 
-## 5. Deploy
+Leave the **Enable signup** toggle on unless you want registration closed.
+
+## 5. Get some data in
+
+The database starts empty, and **the console can only show what is in it**.
+
+1. Open the site and **register an account**. The signup trigger makes the very
+   first account both admin and owner, so that account opens the console with
+   every permission.
+2. Register one or two more accounts (in a private window, or sign out between
+   them) to have users, balances and activity to look at.
+3. Sign in as the first account and open `/admin.html`.
+
+Accounts that only ever existed in `localStorage` cannot be brought across —
+Supabase Auth owns passwords now, and the anon key cannot create or move auth
+users. Register them again.
+
+## 6. Deploy
 
 Push the folder to Vercel as usual. Nothing else is needed — there is no build
 step, it is static files plus the Supabase CDN client.
+
+---
+
+## If data is not showing
+
+The page says *"Database not connected"* at the bottom when the project cannot
+be reached; the reason is in the browser console next to `[bitbase-db]`.
+
+| Symptom | Cause |
+|---|---|
+| Banner, console shows 404 | `supabaseUrl` has `/rest/v1` pasted into it. Use the bare project URL — `db.js` strips a trailing `/rest/v1`, but do it properly anyway. |
+| Everything works, but the console is empty | The database genuinely has no rows. Register accounts. |
+| `relation "profiles" does not exist` | `schema.sql` was never run, or run in the wrong project. |
+| Signup says "check your inbox" | "Confirm email" is on. Turn it off, or confirm the address. |
+| Everything works on your machine, not on Vercel | A config file was not deployed — hard-refresh, and check `supabase-config.js` on the live domain. |
 
 ---
 

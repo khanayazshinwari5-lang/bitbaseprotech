@@ -123,17 +123,35 @@
     });
   }
 
+  /* Supabase's client appends /rest/v1 and /auth/v1 itself. Pasting the REST
+     path out of the dashboard instead of the project URL is the single easiest
+     mistake to make here, and it fails silently - every request 404s and the
+     site quietly carries on with no database. So strip it. */
+  function normaliseUrl(raw) {
+    var u = String(raw || '').trim();
+    u = u.replace(/\/+$/, '');
+    u = u.replace(/\/rest\/v1$/i, '');
+    u = u.replace(/\/auth\/v1$/i, '');
+    return u;
+  }
+
   function connect() {
-    if (!CFG.supabaseUrl || CFG.supabaseUrl.indexOf('YOUR-PROJECT') > -1) {
+    var url = normaliseUrl(CFG.supabaseUrl);
+    if (!url || url.indexOf('YOUR-PROJECT') > -1) {
       return Promise.reject(new Error('supabaseUrl is not set in supabase-config.js'));
     }
-    if (!CFG.supabaseAnonKey || CFG.supabaseAnonKey.indexOf('YOUR-ANON') > -1) {
+    if (!CFG.supabaseAnonKey || String(CFG.supabaseAnonKey).indexOf('YOUR-ANON') > -1) {
       return Promise.reject(new Error('supabaseAnonKey is not set in supabase-config.js'));
     }
     if (CFG.useSupabase === false) return Promise.reject(new Error('Supabase disabled in config'));
     return loadSdk().then(function () {
-      client = global.supabase.createClient(CFG.supabaseUrl, CFG.supabaseAnonKey);
-      return client.auth.getSession();
+      client = global.supabase.createClient(url, CFG.supabaseAnonKey);
+      // Prove the project is actually reachable before the app trusts it.
+      return fetch(url + '/auth/v1/settings', { headers: { apikey: CFG.supabaseAnonKey } })
+        .then(function (r) {
+          if (!r.ok) throw new Error('Supabase answered ' + r.status + ' for ' + url);
+          return client.auth.getSession();
+        });
     });
   }
 
@@ -534,13 +552,47 @@
   function numv(v) { var n = parseFloat(v); return isFinite(n) ? n : null; }
 
   /* ----------------------------------------------------------------- boot */
+  /* A silent fallback is the worst outcome: the site looks fine and nothing is
+     being saved. So when a database was configured but is not answering, say so
+     on the page instead of in the console only. */
+  function warnBanner(text) {
+    if (!document.body) return;
+    if (document.getElementById('bbDbWarn')) return;
+    var el = document.createElement('div');
+    el.id = 'bbDbWarn';
+    el.setAttribute('role', 'alert');
+    el.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;' +
+      'display:flex;gap:10px;align-items:center;justify-content:space-between;' +
+      'padding:11px 14px;background:#3a1416;border-top:1px solid #7a2b31;' +
+      'color:#ffd9d9;font:12.5px/1.5 Inter,system-ui,sans-serif';
+    var msg = document.createElement('span');
+    msg.textContent = text;
+    var close = document.createElement('button');
+    close.textContent = 'Dismiss';
+    close.style.cssText = 'background:none;border:1px solid #7a2b31;color:#ffd9d9;' +
+      'border-radius:6px;padding:5px 10px;cursor:pointer;font:inherit';
+    close.addEventListener('click', function () { el.remove(); });
+    el.appendChild(msg);
+    el.appendChild(close);
+    document.body.appendChild(el);
+  }
+
   var ready = connect()
     .then(function (res) { onSession(res); return hydrate(); })
+    .then(function () {
+      status = 'ready';
+      return null;
+    })
     .catch(function (err) {
-      // No config, no network, or a rejected key: the site still runs, it just
-      // keeps everything in this browser.
-      status = 'local';
       lastError = (err && err.message) || String(err);
+      // No client at all means "not configured" - that is a deliberate mode and
+      // stays quiet. A client that exists but cannot reach the project is a
+      // misconfiguration and gets said out loud.
+      status = client ? 'error' : 'local';
+      if (client) {
+        if (global.console && console.warn) console.warn('[bitbase-db]', lastError);
+        warnBanner('Database not connected - nothing you do here will be saved. ' + lastError);
+      }
       return null;
     })
     .then(function () {
