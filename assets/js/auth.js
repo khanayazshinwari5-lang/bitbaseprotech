@@ -273,7 +273,7 @@
           .then(function () {
             var me = allUsers()[BB.uid()] || null;
             if (!me) {
-              return Promise.reject({ field: 'submitError', message: 'Your account was created but could not be loaded. Try signing in.' });
+              return Promise.reject({ field: 'submitError', message: 'Your account was created but its profile record could not be read.' + profileProblem() });
             }
             startSession(me.uid, me, undefined, true);
             return me;
@@ -340,7 +340,7 @@
           return BB.refreshSession().then(function () { return BB.loadAccounts(); })
             .then(function () {
               var me = allUsers()[BB.uid()] || null;
-              if (!me) return Promise.reject({ field: 'loginError', message: 'That account has no profile record. Please contact support.' });
+              if (!me) return Promise.reject({ field: 'loginError', message: 'Signed in, but this account has no profile record.' + profileProblem() });
               if (me.disabled === true) {
                 return Promise.reject({ field: 'loginError', message: 'This account has been deactivated. Please contact support.' });
               }
@@ -513,6 +513,14 @@
     var map = allUsers();
     map[rec.uid] = rec;
     saveUsers(map);
+  }
+
+  /* When the profile row cannot be read or created, say why. The bare "no
+     profile record" sent everyone looking at the wrong layer; this names the
+     statement Postgres actually refused. */
+  function profileProblem() {
+    var why = (BB && BB.profileError && BB.profileError()) || '';
+    return why ? ' Database said: ' + why : '';
   }
 
   /* ---------------------------------------------------------------- admin

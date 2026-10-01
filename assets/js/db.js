@@ -37,6 +37,7 @@
   var waiters = [];
   var saved = {};             // server ids per key, so writes stay idempotent
   var inflight = 0;
+  var profileError = null;    // why the signed-in user has no profile row
 
   /* ---------------------------------------------------------------- mapping
      table      - target table
@@ -457,6 +458,7 @@
       name: (meta && meta.name) || metaIn.name || '',
       country: (meta && meta.country) || metaIn.country || 'other'
     };
+    profileError = null;
     return client.from('profiles').select('*').eq('id', uid()).limit(1).maybeSingle()
       .then(function (r) {
         if (r && r.data) {
@@ -464,20 +466,33 @@
           mirrorAccounts();
           return profile;
         }
+        if (r && r.error) throw r.error;
         // RLS allows this: a row with your own id, and no role columns set.
-        return ok(client.from('profiles').insert({
+        return client.from('profiles').insert({
           id: uid(), code: randomCode(),
           email: user.email || '', name: wanted.name, country: wanted.country
-        }).select('*').single())
-          .then(function (made) {
-            if (made && made.data) { profile = made.data; mirrorAccounts(); }
-            return profile;
-          });
+        }).select('*').single();
+      })
+      .then(function (r) {
+        if (r && r.data) { profile = r.data; mirrorAccounts(); return profile; }
+        if (r && r.error) throw r.error;
+        return null;
       })
       .catch(function (e) {
-        if (global.console && console.warn) console.warn('[bitbase-db] ensureProfile:', e && e.message);
+        // Kept, not swallowed: this is the one failure the user cannot fix from
+        // the browser, and a generic "could not load your account" tells nobody
+        // whether it is RLS, a missing table or a network problem.
+        profileError = describe(e);
+        if (global.console && console.warn) console.warn('[bitbase-db] ensureProfile:', profileError);
         return null;
       });
+  }
+
+  /* Postgres says "row-level security policy" a lot; say which statement. */
+  function describe(e) {
+    var msg = (e && (e.message || e.error_description || (e.details && e.details.hint))) || 'unknown error';
+    var code = (e && (e.code || '')) || '';
+    return (code ? code + ': ' : '') + String(msg);
   }
 
   /* ------------------------------------------------------------- accounts */
@@ -661,6 +676,7 @@
     deleteAccountFor: deleteAccountFor,
     refreshSession: refreshSession,
     ensureProfile: ensureProfile,
+    profileError: function () { return profileError; },
     audit: audit,
     toAccount: toAccount,
     /* Queue a key for the database. Debounced so a screen that saves five rows

@@ -83,5 +83,5 @@ select p.code, p.email, p.name, p.admin, p.is_owner,
        (u.confirmed_at is not null) as email_confirmed
   from public.profiles p
   join auth.users u on u.id = p.id
- order by p.created_at;
+ order by p.created;
 select count(*) as owners from public.profiles where is_owner;
