@@ -482,7 +482,7 @@
         return '<div class="am-msg ' + (isAdmin ? 'a' : 'u') + '">' +
           '<div class="who">' + esc(isAdmin ? 'Admin' : (m.name || 'User')) + '</div>' +
           (src ? '<img class="am-msg-img" src="' + esc(src) + '" alt="Picture from ' +
-            esc(m.name || 'the user') + '" data-msgimg="' + esc(t.id) + ':' + i + '">' : '') +
+            esc(m.name || 'the user') + '" data-msgimg="' + esc(thread.id) + ':' + i + '">' : '') +
           (m.body ? '<div class="bd">' + esc(m.body) + '</div>' : '') +
           '<div class="tm">' + when(m.time) + '</div></div>';
       }).join('');
@@ -1155,7 +1155,19 @@
         'first admin decides which actions you may take. To take that role yourself, open your own ' +
         'row under Users &rarr; Edit and turn on <strong>First Admin</strong> - it asks for the ' +
         'admin password.</span></div>';
-    $('#amView').innerHTML = role + (view ? view() : '');
+    /* A view that throws used to leave the previous screen on screen with nothing
+       in the console, which looks exactly like "the new thing is not working".
+       Say what broke instead. */
+    var html;
+    try {
+      html = view ? view() : '';
+    } catch (err) {
+      html = '<div class="am-panel"><div class="am-empty">' +
+        'This view failed to render.<br><span style="font-family:\'IBM Plex Mono\',monospace;' +
+        'font-size:11.5px;color:#7a7a7a;">' + esc(err && err.message ? err.message : err) +
+        '</span></div></div>';
+    }
+    $('#amView').innerHTML = role + html;
     if (global.lucide) global.lucide.createIcons();
     wire();
   }
